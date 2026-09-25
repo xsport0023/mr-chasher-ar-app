@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>売掛ウォッチ W1 試験</title>
+<style>
+  body{font-family:system-ui,"Yu Gothic",Meiryo,sans-serif;margin:16px;max-width:900px;line-height:1.6;color:#1d1830;background:#faf8ff}
+  h1{font-size:20px} h2{font-size:15px;margin:18px 0 6px}
+  button{font:inherit;padding:6px 12px;margin:3px 4px 3px 0;border:2px solid #1d1830;border-radius:10px;background:#fff;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  #log{white-space:pre-wrap;background:#fff;border:2px solid #1d1830;border-radius:10px;padding:10px;font-size:12px;min-height:160px}
+  .note{font-size:12px;color:#5c556b}
+</style>
+<script src="https://accounts.google.com/gsi/client" async></script>
+</head>
+<body>
+<h1>売掛ウォッチ W1 試験（本番の画面ではありません）</h1>
+<p class="note">計画 §4 の W1 表 (a)(b)(d)(e) を確かめるページです。ログには件数・応答の種別・所要時間だけを出します（取引先名や金額は出しません）。ログは「ログをコピー」でまとめてチャットに貼ってください。</p>
+
+<h2>(a) サインイン</h2>
+<div id="gsi"></div>
+<div id="who" class="note">未サインイン</div>
+
+<h2>(b) 送受信</h2>
+<button data-run="bootstrap" disabled>bootstrap</button>
+<button data-run="list" disabled>list</button>
+<button data-run="detail" disabled>detail（一覧の先頭1件）</button>
+<button data-run="update" disabled>update（一覧の先頭1件のメモに試験の文言）</button>
+
+<h2>(d) 拒否の確認</h2>
+<button data-run="noToken">トークン無しで list</button>
+<button data-run="fakeToken">偽のトークンで list</button>
+<button data-run="asIs" disabled>今のトークンで list（利用者シートで「有効」を外した後に押す）</button>
+
+<h2>(e) 応答速度（各10回）</h2>
+<button data-run="speedList" disabled>list を10回</button>
+<button data-run="speedUpdate" disabled>update を10回</button>
+
+<h2>ログ</h2>
+<button id="copy">ログをコピー</button>
+<div id="log"></div>
+
+<script>
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwlSLcsaFdbD758oLSl_Z0_ib3PKE2CGzEcVFHaKV_lB7JgIyShBvSIrz-IlyFDpKNE/exec';
+const CLIENT_ID = '426013466468-7403io6sj5ctmgnqsdk1ttsv5sihhktv.apps.googleusercontent.com';
+let idToken = null;
+let lastList = null;
+
+const logEl = document.getElementById('log');
+function log(line) { logEl.textContent += line + '\n'; }
+
+function decodeEmail(jwt) {
+  try {
+    const p = JSON.parse(atob(jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return p.email || '(不明)';
+  } catch (e) { return '(読めない)'; }
+}
+
+window.onload = () => {
+  const wait = setInterval(() => {
+    if (!window.google || !google.accounts || !google.accounts.id) return;
+    clearInterval(wait);
+    google.accounts.id.initialize({ client_id: CLIENT_ID, callback: (r) => {
+      idToken = r.credential;
+      document.getElementById('who').textContent = 'サインイン済み: ' + decodeEmail(idToken);
+      log('(a) ID トークンを取得した（長さ ' + idToken.length + '）');
+      document.querySelectorAll('button[data-run]').forEach(b => b.disabled = false);
+    }});
+    google.accounts.id.renderButton(document.getElementById('gsi'), { theme: 'outline', size: 'large' });
+  }, 200);
+};
+
+async function call(action, extra, token) {
+  const payload = Object.assign({ action: action, idToken: token }, extra || {});
+  const t0 = performance.now();
+  let res, json = null, err = null;
+  try {
+    res = await fetch(GAS_URL, { method: 'POST', body: new URLSearchParams({ payload: JSON.stringify(payload) }) });
+    const text = await res.text();
+    try { json = JSON.parse(text); } catch (e) { err = 'JSON でない応答（先頭: ' + text.slice(0, 40).replace(/\s+/g, ' ') + '）'; }
+  } catch (e) { err = '通信の失敗: ' + e.message; }
+  const ms = Math.round(performance.now() - t0);
+  return { json, err, ms, redirected: res ? res.redirected : null };
+}
+
+function summarize(action, r) {
+  if (r.err) return action + ': ' + r.err + ' / ' + r.ms + 'ms';
+  const j = r.json;
+  let s = action + ': ok=' + j.ok + (j.code ? ' code=' + j.code : '') + ' / 往復 ' + r.ms + 'ms / サーバ ' + j.serverMs + 'ms';
+  if (j.perf) s += ' / ' + JSON.stringify(j.perf);
+  if (action === 'list' && j.ok) s += ' / 未入金 ' + j.tabs['未入金'].length + '件・未設定 ' + j.tabs['未設定'].length + '件' + (j.warnings.length ? '・警告 ' + j.warnings.length : '');
+  if (action === 'detail' && j.ok) s += ' / 記録 ' + j.records.length + '行';
+  if (action === 'update' && j.ok) s += ' / ' + (j.unchanged ? '変更なし' : '記録ID ' + j.state.lastRecordId);
+  if (j.sub) s += ' / 拒否（sub あり）';
+  return s;
+}
+
+function stats(arr) {
+  const s = arr.slice().sort((a, b) => a - b);
+  const mid = s.length % 2 ? s[(s.length - 1) / 2] : Math.round((s[s.length / 2 - 1] + s[s.length / 2]) / 2);
+  return '中央値 ' + mid + 'ms・最大 ' + s[s.length - 1] + 'ms・最小 ' + s[0] + 'ms';
+}
+
+async function doUpdateOnce(i) {
+  if (!lastList) { const l = await call('list', {}, idToken); lastList = l.json; }
+  const card = lastList && lastList.ok && lastList.tabs['未入金'][0];
+  if (!card) { log('update: 一覧の先頭が取れない'); return null; }
+  const r = await call('update', { billingId: card.billingId, memo: 'W1試験 ' + new Date().toISOString() + ' #' + i, baseRecordId: card.lastRecordId }, idToken);
+  if (r.json && r.json.ok && r.json.state) card.lastRecordId = r.json.state.lastRecordId;
+  return r;
+}
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-run]');
+  if (!b) return;
+  const run = b.dataset.run;
+  b.disabled = true;
+  try {
+    if (run === 'bootstrap' || run === 'list') {
+      const r = await call(run, {}, idToken);
+      if (run === 'list') lastList = r.json;
+      log('(b) ' + summarize(run, r) + (r.redirected !== null ? ' / 転送 ' + r.redirected : ''));
+    } else if (run === 'detail') {
+      if (!lastList) { const l = await call('list', {}, idToken); lastList = l.json; }
+      const card = lastList && lastList.ok && lastList.tabs['未入金'][0];
+      if (!card) { log('(b) detail: 一覧の先頭が取れない'); return; }
+      log('(b) ' + summarize('detail', await call('detail', { billingId: card.billingId }, idToken)));
+    } else if (run === 'update') {
+      const r = await doUpdateOnce(0);
+      if (r) log('(b) ' + summarize('update', r));
+    } else if (run === 'noToken') {
+      log('(d) トークン無し: ' + summarize('list', await call('list', {}, null)));
+    } else if (run === 'fakeToken') {
+      log('(d) 偽トークン: ' + summarize('list', await call('list', {}, 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.fake')));
+    } else if (run === 'asIs') {
+      log('(d) 今のトークン: ' + summarize('list', await call('list', {}, idToken)));
+    } else if (run === 'speedList') {
+      const ms = [], sv = [];
+      for (let i = 0; i < 10; i++) { const r = await call('list', {}, idToken); ms.push(r.ms); if (r.json) sv.push(r.json.serverMs); if (!r.json || !r.json.ok) log('(e) list ' + (i + 1) + '回目: ' + summarize('list', r)); }
+      log('(e) list 10回 往復: ' + stats(ms) + ' / サーバ: ' + stats(sv));
+    } else if (run === 'speedUpdate') {
+      const ms = [], sv = [], one = [];
+      for (let i = 0; i < 10; i++) { const r = await doUpdateOnce(i + 1); if (!r) break; ms.push(r.ms); if (r.json) { sv.push(r.json.serverMs); if (r.json.perf) one.push(r.json.perf.mfGetOneMs); } if (!r.json || !r.json.ok) log('(e) update ' + (i + 1) + '回目: ' + summarize('update', r)); }
+      if (ms.length) log('(e) update ' + ms.length + '回 往復: ' + stats(ms) + ' / サーバ: ' + stats(sv) + (one.length ? ' / MF 1件 GET: ' + stats(one) : ''));
+    }
+  } finally {
+    b.disabled = false;
+  }
+});
+
+document.getElementById('copy').onclick = () => navigator.clipboard.writeText(logEl.textContent).then(() => log('（ログをコピーした）'));
+</script>
+</body>
+</html>
