@@ -16,6 +16,7 @@
 </head>
 <body>
 <h1>売掛ウォッチ W1 試験（本番の画面ではありません）</h1>
+<p class="note">ページの版: 3（(e) の update を、CONFLICT・壊れた応答の後に基準を取り直すよう直した版）</p>
 <p class="note">計画 §4 の W1 表 (a)(b)(d)(e) を確かめるページです。ログには件数・応答の種別・所要時間だけを出します（取引先名や金額は出しません）。ログは「ログをコピー」でまとめてチャットに貼ってください。</p>
 
 <h2>(a) サインイン</h2>
@@ -104,11 +105,14 @@ function stats(arr) {
 }
 
 async function doUpdateOnce(i) {
-  if (!lastList) { const l = await call('list', {}, idToken); lastList = l.json; }
+  for (let t = 0; t < 3 && !(lastList && lastList.ok); t++) { const l = await call('list', {}, idToken); lastList = l.json; }
   const card = lastList && lastList.ok && lastList.tabs['未入金'][0];
   if (!card) { log('update: 一覧の先頭が取れない'); return null; }
   const r = await call('update', { billingId: card.billingId, memo: 'W1試験 ' + new Date().toISOString() + ' #' + i, baseRecordId: card.lastRecordId }, idToken);
-  if (r.json && r.json.ok && r.json.state) card.lastRecordId = r.json.state.lastRecordId;
+  // ok と CONFLICT はどちらも最新の state を返すので、次の送信の基準をそれに合わせる。
+  // 壊れた応答は、書き込みが済んだかどうかが分からないので、一覧を取り直す。
+  if (r.json && r.json.state) card.lastRecordId = r.json.state.lastRecordId;
+  else if (!r.json) lastList = null;
   return r;
 }
 
@@ -161,9 +165,23 @@ document.addEventListener('click', async (e) => {
       for (let i = 0; i < 10; i++) { const r = await call('list', {}, idToken); ms.push(r.ms); if (r.json) sv.push(r.json.serverMs); if (!r.json || !r.json.ok) log('(e) list ' + (i + 1) + '回目: ' + summarize('list', r)); }
       log('(e) list 10回 往復: ' + stats(ms) + ' / サーバ: ' + stats(sv));
     } else if (run === 'speedUpdate') {
-      const ms = [], sv = [], one = [];
-      for (let i = 0; i < 10; i++) { const r = await doUpdateOnce(i + 1); if (!r) break; ms.push(r.ms); if (r.json) { sv.push(r.json.serverMs); if (r.json.perf) one.push(r.json.perf.mfGetOneMs); } if (!r.json || !r.json.ok) log('(e) update ' + (i + 1) + '回目: ' + summarize('update', r)); }
-      if (ms.length) log('(e) update ' + ms.length + '回 往復: ' + stats(ms) + ' / サーバ: ' + stats(sv) + (one.length ? ' / MF 1件 GET: ' + stats(one) : ''));
+      const ms = [], okMs = [], okSv = [], one = [];
+      const n = { written: 0, conflict: 0, broken: 0, other: 0 };
+      for (let i = 0; i < 10; i++) {
+        const r = await doUpdateOnce(i + 1);
+        if (!r) break;
+        ms.push(r.ms);
+        if (!r.json) n.broken++;
+        else if (r.json.ok && !r.json.unchanged) { n.written++; okMs.push(r.ms); okSv.push(r.json.serverMs); if (r.json.perf) one.push(r.json.perf.mfGetOneMs); }
+        else if (r.json.code === 'CONFLICT') n.conflict++;
+        else n.other++;
+        if (!r.json || !r.json.ok) log('(e) update ' + (i + 1) + '回目: ' + summarize('update', r));
+      }
+      if (ms.length) {
+        log('(e) update ' + ms.length + '回 内訳: 書けた ' + n.written + '・CONFLICT ' + n.conflict + '・壊れた応答 ' + n.broken + '・その他 ' + n.other);
+        log('(e) update 全' + ms.length + '回 往復: ' + stats(ms));
+        if (okMs.length) log('(e) update 書けた' + okMs.length + '回 往復: ' + stats(okMs) + ' / サーバ: ' + stats(okSv) + (one.length ? ' / MF 1件 GET: ' + stats(one) : ''));
+      }
     }
   } finally {
     b.disabled = false;
