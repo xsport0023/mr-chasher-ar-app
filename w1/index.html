@@ -28,10 +28,11 @@
 <button data-run="detail" disabled>detail（一覧の先頭1件）</button>
 <button data-run="update" disabled>update（一覧の先頭1件のメモに試験の文言）</button>
 
-<h2>(d) 拒否の確認</h2>
-<button data-run="noToken">トークン無しで list</button>
-<button data-run="fakeToken">偽のトークンで list</button>
-<button data-run="asIs" disabled>今のトークンで list（利用者シートで「有効」を外した後に押す）</button>
+<h2>(d) 拒否の確認（各ボタンで bootstrap・list・detail・update の4つを送る）</h2>
+<p class="note">押す前と後で「記録」シートの行数を数えてください。detail・update は、(b) で取った一覧の先頭1件の請求 ID を使います（まだ一覧が無ければ仮の ID）。</p>
+<button data-run="noToken">トークン無しで4つ</button>
+<button data-run="fakeToken">偽のトークンで4つ</button>
+<button data-run="asIs" disabled>今のトークンで4つ（利用者シートで「有効」を外した後に押す）</button>
 
 <h2>(e) 応答速度（各10回）</h2>
 <button data-run="speedList" disabled>list を10回</button>
@@ -111,6 +112,26 @@ async function doUpdateOnce(i) {
   return r;
 }
 
+// (d): 4つの action を同じトークンで送る。どれかが ok=true なら「停止」を出す。
+async function rejectAll(label, token) {
+  const card = lastList && lastList.ok && lastList.tabs['未入金'][0];
+  const billingId = card ? card.billingId : 'W1-dummy';
+  const extras = {
+    bootstrap: {},
+    list: {},
+    detail: { billingId: billingId },
+    update: { billingId: billingId, memo: 'W1試験 (d) ' + label, baseRecordId: card ? card.lastRecordId : '' }
+  };
+  let leaked = 0;
+  for (const action of ['bootstrap', 'list', 'detail', 'update']) {
+    const r = await call(action, extras[action], token);
+    if (r.json && r.json.ok) leaked++;
+    log('(d) ' + label + ': ' + summarize(action, r));
+  }
+  log('(d) ' + label + ': 請求 ID は' + (card ? '一覧の先頭' : '仮の値') + ' / ' +
+    (leaked ? '★ ok=true が ' + leaked + '件。停止（デプロイを無効にする）' : '4つとも ok=true なし'));
+}
+
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button[data-run]');
   if (!b) return;
@@ -130,11 +151,11 @@ document.addEventListener('click', async (e) => {
       const r = await doUpdateOnce(0);
       if (r) log('(b) ' + summarize('update', r));
     } else if (run === 'noToken') {
-      log('(d) トークン無し: ' + summarize('list', await call('list', {}, null)));
+      await rejectAll('トークン無し', null);
     } else if (run === 'fakeToken') {
-      log('(d) 偽トークン: ' + summarize('list', await call('list', {}, 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.fake')));
+      await rejectAll('偽トークン', 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.fake');
     } else if (run === 'asIs') {
-      log('(d) 今のトークン: ' + summarize('list', await call('list', {}, idToken)));
+      await rejectAll('今のトークン', idToken);
     } else if (run === 'speedList') {
       const ms = [], sv = [];
       for (let i = 0; i < 10; i++) { const r = await call('list', {}, idToken); ms.push(r.ms); if (r.json) sv.push(r.json.serverMs); if (!r.json || !r.json.ok) log('(e) list ' + (i + 1) + '回目: ' + summarize('list', r)); }
