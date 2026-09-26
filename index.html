@@ -70,6 +70,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .invoice-card[draggable=true]{cursor:grab}
 .invoice-card.dragging{opacity:.4}
 .card-top{display:flex;align-items:start;justify-content:space-between;gap:8px}
+.assignee-tag{font-size:11px;font-weight:850;border:2px solid #1d1830;border-radius:99px;padding:3px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42%;background:#dff4ff;flex:0 1 auto}
+.assignee-tag.none{border-style:dashed;border-color:#b9b2c6;color:#8a8398;background:#fff}
+.assignee-choices .choice[aria-pressed=true]{background:#9be7d0}
+.assignee-note{font-size:11px;color:#665e76;margin:-4px 0 12px}
 .client{font-size:13px;font-weight:950;line-height:1.4;overflow-wrap:anywhere}
 .subject{font-size:12px;color:#645d72;margin:4px 0 11px;overflow-wrap:anywhere;display:block}
 /* 金額の右にメモの先頭2行。メモの有無でカードの高さを変えない（高さを2行分に固定） */
@@ -213,6 +217,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     openId: null, openPartner: '', detailGen: 0,
     detail: null,         // { loading, records, error }
     draftStatus: null, draftMemo: null,
+    draftAssignee: null,  // 詳細で選んだ担当（メール、未割り当ては ''）。保存するまで送らない（ar-app-assignee §2-2）
+    staff: [],            // 利用者シートの営業（サーバの staff）。features が無いサーバ（旧サーバ）では使わない
+    features: null,       // サーバが担当に対応しているか（{ assignee: 1 }）。無ければ担当の表示・操作を出さない（第1巡 指摘2）
+    staffSel: '全社',     // 右上の「担当」の選択（全社／営業のメール／未割り当て）
     notice: null,         // { kind: saved|info|conflict|paid|unknown|error, text, done }。★ 保存されなかったメモは知らせに持たせない（下の lost・unsettled が正本。W5 第4巡 指摘2）
     busy: null,           // 書き込み中: { text }。この間は画面全体を止める
     unsettled: {},        // 応答が分からなかった保存・移動: 請求ID → { opId, kind: save|drag, lostMemo, partner, to }。確定するまでその請求を操作させない
@@ -361,7 +369,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var id = S.openId;
     var card = id ? findCard(id) : null;
     if (card && !locked(id)) V.stashDraft(S.lost, id, card.partner, card, S.draftStatus, S.draftMemo);
-    S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null;
+    if (card && !locked(id) && S.features && S.draftAssignee !== null && S.draftAssignee !== (card.assignee || '')) {
+      V.addIntent(S.lost, id, card.partner, 'サインインが切れた・許可されなかったため、担当「' + V.assigneeLabel(S.staff, S.draftAssignee) + '」は保存していません。サインインし直してから、もう一度操作してください');
+    }
+    S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.detailGen++;
     S.tabs = null; S.fetchedAt = ''; S.warnings = [];
     $('#detail').innerHTML = '';
@@ -418,9 +429,33 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     useStashOf(V.tokenSub(S.token) || S.user.email);
     S.ownerGen = S.authGen;
     $('#who').textContent = S.user.email;
-    $('#staff').innerHTML = (info.staffOptions || ['全社']).map(function (o) { return '<option>' + esc(o) + '</option>'; }).join('') +
-      '<option disabled>担当者A（準備中）</option><option disabled>担当者B（準備中）</option>';
+    applyStaff(info, true);
     if (info.defaults && typeof info.defaults.minDays === 'number') { S.days = info.defaults.minDays; $('#days').value = String(S.days); }
+  }
+
+  // 右上の「担当」と担当の選択肢を入れる（list・bootstrap の応答から）。起動のときは既定（営業は自分、それ以外は全社）を選ぶ。
+  // 取り直しのときは今の選択を保つ（選択肢から消えていれば全社）。features が無いサーバ（戻したとき）なら「全社」だけにする
+  function applyStaff(info, isBoot) {
+    S.features = info.features && info.features.assignee ? info.features : null;
+    S.staff = S.features ? (info.staff || []) : [];
+    var choices = S.features ? V.staffChoices(S.staff) : [{ value: V.ALL_STAFF, label: '全社' }];
+    if (isBoot) S.staffSel = S.features ? V.defaultStaff(S.user, S.staff) : V.ALL_STAFF;
+    if (!choices.some(function (c) { return c.value === S.staffSel; })) S.staffSel = V.ALL_STAFF;
+    $('#staff').innerHTML = choices.map(function (c) { return '<option value="' + esc(c.value) + '">' + esc(c.label) + '</option>'; }).join('');
+    $('#staff').value = S.staffSel;
+  }
+
+  // 担当の応答（state）を、同じ取引先のカードへ合わせる
+  function applyAssigneeState(st) {
+    if (st && typeof st.assignee === 'string') V.applyAssignee(allCards(), st.partnerId, st.assignee, st.assigneeRecordId);
+  }
+
+  // 詳細の要求。担当に対応したサーバには、担当の履歴の絞り込みに使う取引先ID を添える（§3-3）
+  function detailBody(id, extra) {
+    var card = findCard(id);
+    var body = { billingId: id };
+    if (S.features && card && card.partnerId) body.partnerId = card.partnerId;
+    return Object.assign(body, extra || {});
   }
 
   // 控えの持ち主を切り替える。今の持ち主の控えはしまい、新しい持ち主の控え（無ければ空）を出す
@@ -470,6 +505,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       S.tabs = r.json.tabs;
       S.fetchedAt = r.json.fetchedAt;
       S.warnings = r.json.warnings || [];
+      if (!boot && r.json.user) applyStaff(r.json, false);   // 取り直しでも担当の対応を見直す（サーバを戻したとき、担当を出さない）
       // ★ 未確定（unsettled）・保存されなかったメモ（lost）は取り直しでは外さない。一覧から消えても「要確認」に残る
       if (S.openId && !findCard(S.openId)) {
         closeDetail(true);
@@ -514,7 +550,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 
   // ---- 一覧の描画（検索欄などの入力部品は描き直さない。入力中のフォーカスを保つため） ----
   function visibleCards() {
-    return V.sortCards(V.filterCards(S.tabs[S.tab], { days: S.days, query: S.query }), S.sort);
+    return V.sortCards(V.filterCards(S.tabs[S.tab], { days: S.days, query: S.query,
+      staff: S.features ? S.staffSel : V.ALL_STAFF, staffList: S.staff }), S.sort);
   }
 
   function renderMain() {
@@ -560,8 +597,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var unsettled = locked(c.billingId);
     var drag = canDrag && !unsettled ? ' draggable="true"' : '';
     return '<button type="button" class="invoice-card' + (S.openId === c.billingId ? ' is-active' : '') + (unsettled ? ' is-pending' : '') + '"' + drag +
-      ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(c.status) + (unsettled ? ' 未確定' : '') + ' 詳細を開く">' +
+      ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(c.status) +
+      (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (unsettled ? ' 未確定' : '') + ' 詳細を開く">' +
       '<span class="card-top"><span><span class="client">' + esc(c.partner) + '</span><span class="subject">' + esc(c.title) + '</span></span>' +
+      (S.features ? '<span class="assignee-tag' + (V.isUnassigned(S.staff, c.assignee) && !c.assignee ? ' none' : '') + '" title="担当">' + esc(V.assigneeLabel(S.staff, c.assignee)) + '</span>' : '') +
       (unsettled ? '<span class="unsettled-mark">未確定</span>' : '') + '</span>' +
       '<span class="money-row"><span class="amount">' + V.yen(c.amount) + '</span><span class="memo-excerpt" title="メモの先頭2行">' + esc(V.memoExcerpt(c.memo)) + '</span></span>' +
       '<span class="card-bottom"><span class="date">' + dateLabel(S.tab) + ' ' + V.jpDate(dateOf(c, S.tab)) + '</span>' +
@@ -582,7 +621,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   async function openDetail(id) {
     var card = findCard(id);
     if (!card || S.busy) return;
-    S.openId = id; S.openPartner = card.partner; S.draftStatus = null; S.draftMemo = null; S.notice = null;
+    S.openId = id; S.openPartner = card.partner; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null; S.notice = null;
     S.detail = { loading: true, records: [] };
     var gen = ++S.detailGen;
     var ctx = has(S.unsettled, id) ? null : perfScene('detail');
@@ -610,24 +649,29 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // ctx があれば開いた直後の読み込み（背景の読み取り。保存の開始を妨げない）
   async function fetchDetail(id, gen, ctx) {
     var g = S.authGen;
-    var r = await api('detail', { billingId: id }, ctx ? { ctx: ctx, bg: true } : null);
+    var r = await api('detail', detailBody(id), ctx ? { ctx: ctx, bg: true } : null);
     if (ctx) perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs });
     if (g !== S.authGen || S.openId !== id || gen !== S.detailGen) return false;
     if (handleAuthFailure(r)) return false;
-    if (r.kind !== 'ok') { S.detail = { loading: false, records: S.detail ? S.detail.records : [], error: V.failureText(r.kind, r.code) }; renderDetail(); return false; }
+    if (r.kind !== 'ok') { S.detail = { loading: false, records: S.detail ? S.detail.records : [], assigneeHistory: S.detail ? S.detail.assigneeHistory : [], error: V.failureText(r.kind, r.code) }; renderDetail(); return false; }
     var recs = V.mergeRecords(S.detail ? S.detail.records : [], r.json.records || []);
     var card = findCard(id);
     if (card && recs.length && recs[0].recordId > (card.lastRecordId || 0)) {
       card.status = recs[0].status; card.memo = recs[0].memo; card.lastRecordId = recs[0].recordId;
       renderMain();
     }
-    S.detail = { loading: false, records: recs };
+    // 担当の履歴は records と分けて持ち、記録ID で重ねずに合わせる（第1巡 指摘1。保存の応答で先に入った1行を消さない）
+    // 取引先が食い違ったときは、前に読んだ履歴も合わせずに捨てる（別の取引先の履歴を残さない。H1 実装レビュー第1巡 指摘2）
+    var hist = r.json.partnerMismatch ? [] : V.mergeRecords(S.detail ? S.detail.assigneeHistory : [], r.json.assigneeHistory || []);
+    applyAssigneeState(r.json.state);
+    if (S.features) renderMain();
+    S.detail = { loading: false, records: recs, assigneeHistory: hist, partnerMismatch: !!r.json.partnerMismatch };
     renderDetail();
     return true;
   }
 
   function hasDraft(card) {
-    return !!card && V.buildUpdate(card, S.draftStatus, S.draftMemo) !== null;
+    return !!card && V.buildUpdate(card, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null) !== null;
   }
 
   function closeDetail(force) {
@@ -636,7 +680,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var card = findCard(id);
     if (!force && !locked(id) && hasDraft(card) && !window.confirm('保存していない変更があります。閉じてよいですか？')) return;
     // 保存されなかったメモは S.lost・S.unsettled が持っているので、閉じても要確認に残る（知らせには持たせていない）
-    S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null;
+    S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.detailGen++;
     $('#detail').innerHTML = '';
     document.body.style.overflow = '';
@@ -664,7 +708,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     }).join('');
     var d = S.detail || { loading: true, records: [] };
     // 読み込み中でも、保存の応答で先に入った記録は出す（K2）
-    var lines = V.historyLines(d.records).map(function (h) { return '<div class="history-item"><small>' + esc(h.when) + ' ・ ' + esc(h.who) + '</small><strong>' + esc(h.content) + '</strong></div>'; }).join('');
+    var lines = V.detailLines(d.records, S.features && !d.partnerMismatch ? d.assigneeHistory : [], S.staff).map(function (h) { return '<div class="history-item"><small>' + esc(h.when) + ' ・ ' + esc(h.who) + '</small><strong>' + esc(h.content) + '</strong></div>'; }).join('');
     var hist = d.loading ? lines + '<div class="history-item">読み込み中…</div>' : (lines || '<div class="history-item">記録はまだありません</div>');
     if (d.error) hist = '<div class="history-item">記録を読めませんでした（' + esc(d.error) + '）。<button type="button" class="button small ghost" data-reload-detail>読み直す</button></div>' + hist;
     $('#detail').innerHTML =
@@ -679,7 +723,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<div class="detail-columns"><section><h3>メモ <small style="font-weight:500">（上書き）</small></h3>' +
       '<textarea class="note-area" id="memo" maxlength="5000" placeholder="先方への連絡内容や次の予定を記入"' + (busy ? ' disabled' : '') + '>' + esc(memo) + '</textarea>' +
       '<div class="limit" id="limit">' + memo.length + ' / 5,000文字</div></section>' +
-      '<section><h3>記録（新しい順）</h3><div class="history">' + hist + '</div></section></div>' +
+      '<section>' + assigneeHTML(card, busy) + '<h3>記録（新しい順）</h3><div class="history">' + hist + '</div></section></div>' +
       '<div class="detail-actions"><button type="button" class="button teal" data-save' + (busy ? ' disabled' : '') + '>変更をまとめて保存</button>' +
       '<span class="feedback" role="status">' + (S.notice && (S.notice.kind === 'saved' || S.notice.kind === 'info') ? esc(S.notice.text) : '') + '</span></div>' +
       '</div></article></div>';
@@ -688,6 +732,24 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var m = document.getElementById('memo');
     if (keepCaret && m && !m.disabled) { m.focus(); m.setSelectionRange(keepCaret[0], keepCaret[1]); }
     else if (focus || hadFocus) document.querySelector('.detail-panel').focus();
+  }
+
+  // 「この取引先の担当」（ar-app-assignee §2-2 の1）。担当に対応していないサーバ・取引先ID の無い請求では押せるボタンを出さない
+  function assigneeHTML(card, busy) {
+    if (!S.features) return '';
+    var head = '<h3>この取引先の担当</h3>';
+    if (!card.partnerId) return head + '<p class="assignee-note">取引先を特定できないため担当を付けられません。</p>';
+    if (S.detail && S.detail.partnerMismatch) return head + '<p class="assignee-note">取引先が変わった可能性があります。一覧を取り直してください。</p>';
+    var now = card.assignee || '';
+    var current = S.draftAssignee !== null ? S.draftAssignee : now;
+    var btn = function (email, label, disabled) {
+      return '<button type="button" class="choice" data-assignee="' + esc(email) + '" aria-pressed="' + (current === email) + '"' + (busy || disabled ? ' disabled' : '') + '>' + esc(label) + '</button>';
+    };
+    var list = S.staff.filter(function (x) { return x.active; }).map(function (x) { return btn(x.email, x.name, false); });
+    if (now && V.isUnassigned(S.staff, now)) list.unshift(btn(now, V.assigneeLabel(S.staff, now), true));   // 無効の営業は選び直せない
+    list.push(btn('', '未割り当て', false));
+    return head + '<p class="assignee-note">同じ取引先のすべての請求に付きます。「変更をまとめて保存」で保存します。</p>' +
+      '<div class="status-choices assignee-choices" role="group" aria-label="この取引先の担当" style="margin-bottom:16px">' + list.join('') + '</div>';
   }
 
   function noticeHTML() {
@@ -725,7 +787,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var id = S.openId;
     var card = findCard(id);
     if (!card || locked(id)) return;
-    var body = V.buildUpdate(card, S.draftStatus, S.draftMemo);
+    var body = V.buildUpdate(card, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null);
     if (!body) { S.notice = { kind: 'info', text: '変更はありません' }; renderDetail(); return; }
     body.opId = newOpId();
     var ctx = perfScene('save');
@@ -748,13 +810,27 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         S.detail.records = V.mergeRecords(S.detail.records, [{ recordId: r.json.state.lastRecordId, at: r.json.state.at, status: r.json.state.status, memo: r.json.state.memo,
           statusChanged: body.status !== undefined, memoChanged: body.memo !== undefined, email: S.user ? S.user.email : '' }]);
       }
-      S.draftStatus = null; S.draftMemo = null;
+      S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
       S.notice = { kind: r.json.unchanged ? 'info' : 'saved', text: r.json.unchanged ? '変更はありません' : '✓ 保存しました' };
+      var st = r.json.state;
+      if (!V.assigneeSaved(body, st)) {
+        // 旧サーバに戻っていた: 連絡状況・メモだけが保存され、担当は捨てられた。保存できたように見せない（第1巡 指摘2）
+        V.addIntent(S.lost, id, card ? card.partner : S.openPartner, '担当「' + V.assigneeLabel(S.staff, body.assignee) + '」は保存されませんでした（担当に対応していない版のサーバでした）。一覧を取り直してから、もう一度操作してください');
+        S.notice = { kind: 'error', text: (body.status !== undefined || body.memo !== undefined ? '連絡状況・メモは保存しました。' : '') + '担当は保存されませんでした。一覧を取り直してから、もう一度操作してください。' };
+      } else if (st && typeof st.assignee === 'string') {
+        var prevAsg = card ? card.assignee || '' : '';
+        applyAssigneeState(st);
+        if (body.assignee !== undefined && !r.json.unchanged && st.assigneeRecordId === st.lastRecordId && S.detail && S.openId === id) {
+          S.detail.assigneeHistory = V.mergeRecords(S.detail.assigneeHistory || [], [{ recordId: st.assigneeRecordId, at: st.at, email: S.user ? S.user.email : '',
+            billingNumber: card ? card.billingNumber : '', sameBilling: true, from: prevAsg, to: st.assignee }]);
+        }
+      }
       return;
     }
     if (r.kind === 'fail') {
       var kind = r.code === 'CONFLICT' ? 'conflict' : (r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND') ? 'paid' : 'error';
       V.addLost(S.lost, id, card ? card.partner : S.openPartner, V.failureText(r.kind, r.code), lostMemo);   // 先の控えは上書きしない
+      if (body.assignee !== undefined) V.addIntent(S.lost, id, card ? card.partner : S.openPartner, V.failureText(r.kind, r.code) + '（担当「' + V.assigneeLabel(S.staff, body.assignee) + '」は保存していません）');
       S.notice = {
         kind: kind,
         text: kind === 'conflict' ? 'ほかの人が先に更新しました。あなたの変更は保存していません。最新の内容を表示し直してから、もう一度操作してください。'
@@ -764,8 +840,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       return;
     }
     // 壊れた応答・打ち切り・通信の失敗: 書けたかどうか分からない。送り直さず、その操作IDの確定を頼む（G12 ④・§6-13）
-    S.unsettled[id] = { opId: body.opId, kind: 'save', lostMemo: lostMemo, partner: card ? card.partner : S.openPartner };
-    S.draftStatus = null; S.draftMemo = null;
+    S.unsettled[id] = { opId: body.opId, kind: 'save', lostMemo: lostMemo, partner: card ? card.partner : S.openPartner, assignee: body.assignee };
+    S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.busy = { text: '保存できたかを確かめています…' };
     renderBusy();
     await settleInner(id, perfScene('settle'));
@@ -783,7 +859,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   async function settleInner(id, ctx) {
     var u = S.unsettled[id];
     if (!u) return;
-    var r = await api('detail', { billingId: id, settleOpId: u.opId }, ctx ? { ctx: ctx } : null);
+    var r = await api('detail', detailBody(id, { settleOpId: u.opId }), ctx ? { ctx: ctx } : null);
     if (ctx) perfEnd(ctx, r.kind === 'ok' && r.json.settled ? r.json.settled : r.kind === 'ok' ? 'unknown' : V.perfResult(r));
     if (handleAuthFailure(r)) return;
     var card = findCard(id);
@@ -801,21 +877,33 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     }
     delete S.unsettled[id];
     if (card) applyState(card, r.json.state);
+    applyAssigneeState(r.json.state);
     var written = r.json.settled === 'written';
     // 保存できていたなら、通常の保存成功と同じく、保存後のメモと同じ内容の控えだけを外す（差分確認 第2巡 条件）
     if (written && r.json.state) V.removeLostMemo(S.lost, id, r.json.state.memo);
+    // 書けていても、担当が保存できたかはその操作の行の証拠（settledOp）で判断する。今の担当の欄は証拠にしない
+    // （旧サーバが書いた後に新サーバで確定すると、今の担当は入るが、その操作では担当を変えていない。H1 実装レビュー第1巡 指摘1・第2巡 指摘1）
+    var asgRes = written && u.assignee !== undefined ? V.settledAssignee(u.assignee, r.json) : 'na';
+    var asgLost = asgRes === 'notSaved' || asgRes === 'unknown';
+    var asgLabel = u.assignee !== undefined ? V.assigneeLabel(S.staff, u.assignee) : '';
+    if (asgRes === 'notSaved') V.addIntent(S.lost, id, u.partner, '担当「' + asgLabel + '」は保存されませんでした（担当に対応していない版のサーバが書いていました）。一覧を取り直してから、もう一度操作してください');
+    if (asgRes === 'unknown') V.addIntent(S.lost, id, u.partner, '担当「' + asgLabel + '」が保存できたかを確かめられませんでした（担当に対応していない版のサーバが答えました）。一覧を取り直して担当を確かめ、違っていればもう一度操作してください');
     if (open) {
       S.detailGen++;                   // 確定の答え（記録つき）を正とする。これより前に始めた読み込みの応答は捨てる
-      S.detail = { loading: false, records: r.json.records || [] };
-      S.notice = written
+      S.detail = { loading: false, records: r.json.records || [], assigneeHistory: r.json.assigneeHistory || [], partnerMismatch: !!r.json.partnerMismatch };
+      S.notice = asgLost
+        ? { kind: 'error', text: '連絡状況・メモは保存できていました（記録の先頭）。' + (asgRes === 'unknown' ? '担当が保存できたかは確かめられませんでした。一覧を取り直して担当を確かめてください。' : '担当は保存されませんでした。一覧を取り直してから、もう一度操作してください。') }
+        : written
         ? { kind: 'saved', text: '✓ 保存できていました（記録の先頭）' }
         : { kind: 'unknown', done: 'ok',
           text: '保存されていませんでした。この操作は取り消したので、あとから書かれることはありません。最新の内容を表示しています。必要ならもう一度操作してください。' };
     }
     if (!written) V.addLost(S.lost, id, u.partner, '保存はできていませんでした（取り消しました）', u.lostMemo);
+    if (!written && u.assignee !== undefined) V.addIntent(S.lost, id, u.partner, '担当「' + V.assigneeLabel(S.staff, u.assignee) + '」は保存できていませんでした（取り消しました）。もう一度操作してください');
     if (u.kind === 'drag' || !open) {
-      toast(written ? '「' + u.partner + '」の' + (u.kind === 'drag' ? ' ' + u.to + ' への移動' : '保存') + 'はできていました'
-        : '「' + u.partner + '」の' + (u.kind === 'drag' ? '移動' : '保存') + 'はできていませんでした（取り消しました）。最新の状態で表示しています。', written ? '' : 'error');
+      toast(asgLost ? '「' + u.partner + '」の連絡状況・メモは保存できていましたが、担当は' + (asgRes === 'unknown' ? '保存できたかを確かめられませんでした' : '保存されませんでした') + '。「要確認」を見てください。'
+        : written ? '「' + u.partner + '」の' + (u.kind === 'drag' ? ' ' + u.to + ' への移動' : '保存') + 'はできていました'
+        : '「' + u.partner + '」の' + (u.kind === 'drag' ? '移動' : '保存') + 'はできていませんでした（取り消しました）。最新の状態で表示しています。', written && !asgLost ? '' : 'error');
     }
   }
 
@@ -824,7 +912,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (S.busy) return;
     var id = S.openId;
     var gen = ++S.detailGen;
-    S.draftStatus = null; S.draftMemo = null;
+    S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.notice = { kind: 'unknown', text: '最新の内容を読み直しています…' };
     renderDetail();
     var ok = await fetchDetail(id, gen);
@@ -904,6 +992,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     else if (b.dataset.open) { if (S.openId) closeDetail(false); if (!S.openId) openDetail(b.dataset.open); }
     else if (b.hasAttribute('data-close')) closeDetail(false);
     else if (b.dataset.choice) { S.draftStatus = b.dataset.choice; S.notice = null; renderDetail(); }
+    else if (b.hasAttribute('data-assignee')) { S.draftAssignee = b.dataset.assignee; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-save')) save();
     else if (b.hasAttribute('data-refresh')) loadList();
     else if (b.hasAttribute('data-reload-list')) { closeDetail(true); loadList(); }
@@ -929,6 +1018,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   document.addEventListener('change', function (e) {
     if (e.target.id === 'days') { S.days = Number(e.target.value); renderMain(); }
     else if (e.target.id === 'sort') { S.sort = e.target.value; renderMain(); }
+    else if (e.target.id === 'staff') { S.staffSel = e.target.value; renderMain(); }
   });
 
   document.addEventListener('keydown', function (e) {

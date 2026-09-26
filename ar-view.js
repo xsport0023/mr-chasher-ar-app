@@ -32,7 +32,104 @@
   }
 
   function filterCards(cards, opt) {
-    return (cards || []).filter(function (c) { return passesDays(c, opt.days) && matchesQuery(c, opt.query); });
+    return (cards || []).filter(function (c) {
+      return passesDays(c, opt.days) && matchesQuery(c, opt.query) && passesStaff(c, opt.staff, opt.staffList);
+    });
+  }
+
+  // ---- 取引先ごとの担当者（計画 ar-app-assignee §2-2・§3-4） ----
+  var ALL_STAFF = '全社';
+  var UNASSIGNED = '__unassigned__';   // 「未割り当て」の絞り込みの値（メールと重ならない）
+
+  function findStaff(staff, email) {
+    return (staff || []).filter(function (x) { return x.email === email; })[0] || null;
+  }
+
+  // 担当者の表示名。無効の営業は「（無効）」を付ける。利用者シートから消えた人も分かるように出す
+  function assigneeLabel(staff, email) {
+    if (!email) return '未割り当て';
+    var x = findStaff(staff, email);
+    if (!x) return '（利用者シートに無い人）';
+    return x.active ? x.name : x.name + '（無効）';
+  }
+
+  // 「未割り当て」の絞り込みに入るか: 担当が空・無効の営業・シートから消えた人（付け替え漏れに気づけるように。§1-2）
+  function isUnassigned(staff, email) {
+    var x = email ? findStaff(staff, email) : null;
+    return !x || !x.active;
+  }
+
+  function passesStaff(card, sel, staff) {
+    if (!sel || sel === ALL_STAFF) return true;
+    if (sel === UNASSIGNED) return isUnassigned(staff, card.assignee);
+    return card.assignee === sel;
+  }
+
+  // 右上の「担当」の選択肢: 全社／有効な営業／未割り当て
+  function staffChoices(staff) {
+    return [{ value: ALL_STAFF, label: '全社' }]
+      .concat((staff || []).filter(function (x) { return x.active; }).map(function (x) { return { value: x.email, label: x.name }; }))
+      .concat([{ value: UNASSIGNED, label: '未割り当て' }]);
+  }
+
+  // 「担当」の既定: 営業（有効）は自分、それ以外は全社（§1-2）
+  function defaultStaff(user, staff) {
+    var email = user && user.email ? String(user.email).toLowerCase() : '';
+    var x = email ? findStaff(staff, email) : null;
+    return user && user.role === '営業' && x && x.active ? email : ALL_STAFF;
+  }
+
+  // 保存の応答で、担当が保存されたかを確かめる。担当を送っていなければ真。
+  // 旧サーバの応答には state.assignee が無い（担当を黙って捨てる）ので偽（計画レビュー第1巡 指摘2）。
+  // 欄があるだけでは真にしない。送った担当と同じ値のときだけ真（H1 実装レビュー第2巡 指摘1）
+  function assigneeSaved(body, state) {
+    if (!body || body.assignee === undefined) return true;
+    return !!state && typeof state.assignee === 'string' && state.assignee === body.assignee;
+  }
+
+  // 確定（settleOpId）の応答で、担当が保存できていたかを操作ごとの証拠（settledOp）で判断する（H1 実装レビュー第2巡 指摘1）。
+  //   'saved'   … その操作の行で、送った担当に変えていた
+  //   'notSaved'… その操作の行は担当を変えていない（旧サーバが書いた・別の値）
+  //   'unknown' … 証拠が無い（旧サーバの確定の応答）。成功とは扱わない
+  // 今の担当（state.assignee）は、別の操作や版の切り替えで入りうるので証拠に使わない
+  function settledAssignee(want, json) {
+    var op = json && json.settledOp;
+    if (!op || typeof op !== 'object') return 'unknown';
+    return op.assigneeChanged === true && op.assignee === want ? 'saved' : 'notSaved';
+  }
+
+  // 同じ取引先ID のカードすべての担当を合わせる。担当の記録ID が今より古い応答では戻さない（K2 と同じ考え方）。合わせた数を返す
+  function applyAssignee(cards, partnerId, assignee, recordId) {
+    if (!partnerId || typeof assignee !== 'string' || typeof recordId !== 'number') return 0;
+    var n = 0;
+    (cards || []).forEach(function (c) {
+      if (c.partnerId !== partnerId || recordId < (c.assigneeRecordId || 0)) return;
+      c.assignee = assignee; c.assigneeRecordId = recordId; n++;
+    });
+    return n;
+  }
+
+  // 担当の履歴（新しい順の assigneeHistory）から1行ずつの文言を作る。別の請求で変えたものには請求番号を添える（§2-2 の6）
+  function assigneeLines(history, staff) {
+    return (history || []).map(function (h) {
+      return { recordId: h.recordId, when: shortAt(h.at), who: h.email || '',
+        content: '担当: ' + assigneeLabel(staff, h.from) + ' → ' + assigneeLabel(staff, h.to) +
+          (h.sameBilling ? '' : '（請求 No.' + h.billingNumber + ' で変更）') };
+    });
+  }
+
+  // 詳細の記録の欄: 連絡状況・メモ（records からだけ求める）と担当（assigneeHistory からだけ求める）を記録ID の新しい順に並べる。
+  // 同じ記録ID（この請求で担当と一緒に変えた行）は1行にまとめる。担当だけの行の「（変更なし）」は担当の文言に置き換える（第1巡 指摘1）
+  function detailLines(records, history, staff) {
+    var byId = {};
+    var order = [];
+    historyLines(records).forEach(function (l) { byId[l.recordId] = l; order.push(l.recordId); });
+    assigneeLines(history, staff).forEach(function (a) {
+      var l = byId[a.recordId];
+      if (!l) { byId[a.recordId] = a; order.push(a.recordId); return; }
+      l.content = l.content === '（変更なし）' ? a.content : l.content + '／' + a.content;
+    });
+    return order.sort(function (x, y) { return y - x; }).map(function (id) { return byId[id]; });
   }
 
   // 並び順: 経過日数の多い順（日数不明は最後）／請求額の多い順／取引先名順。同じなら請求番号順
@@ -131,18 +228,24 @@
       BAD_REQUEST: '送った内容に誤りがありました',
       SERVER_ERROR: 'サーバで問題が起きました',
       CANCELLED: 'この操作は取り消されていました',
+      PARTNER_UNKNOWN: 'この請求の取引先を特定できませんでした',
+      PARTNER_CHANGED: 'この請求の取引先が変わっていました（一覧を取り直してください）',
       UNAUTHENTICATED: 'サインインの期限が切れました',
       FORBIDDEN: '利用が許可されていません'
     };
     return m[code] || ('保存できませんでした（' + code + '）');
   }
 
-  // 保存で送る変更（変わった項目だけ）。何も変わらなければ null
-  function buildUpdate(card, draftStatus, draftMemo) {
+  // 保存で送る変更（変わった項目だけ）。何も変わらなければ null。
+  // 担当は、取引先ID のあるカードで今と違うときだけ送り、画面が見ていた担当の記録ID と取引先ID を添える（ar-app-assignee §3-2）
+  function buildUpdate(card, draftStatus, draftMemo, draftAssignee) {
     var out = { billingId: card.billingId, baseRecordId: card.lastRecordId || 0 };
     var changed = false;
     if (draftStatus !== null && draftStatus !== undefined && draftStatus !== card.status) { out.status = draftStatus; changed = true; }
     if (draftMemo !== null && draftMemo !== undefined && draftMemo !== card.memo) { out.memo = draftMemo; changed = true; }
+    if (draftAssignee !== null && draftAssignee !== undefined && card.partnerId && draftAssignee !== (card.assignee || '')) {
+      out.assignee = draftAssignee; out.baseAssigneeRecordId = card.assigneeRecordId || 0; out.partnerId = card.partnerId; changed = true;
+    }
     return changed ? out : null;
   }
 
@@ -300,6 +403,9 @@
     STATUSES: STATUSES, norm: norm, matchesQuery: matchesQuery, passesDays: passesDays, filterCards: filterCards,
     sortCards: sortCards, memoExcerpt: memoExcerpt, ageClass: ageClass, ageLabel: ageLabel, yen: yen, jpDate: jpDate,
     summarize: summarize, historyLines: historyLines, shortAt: shortAt, classifyResponse: classifyResponse,
+    ALL_STAFF: ALL_STAFF, UNASSIGNED: UNASSIGNED, assigneeLabel: assigneeLabel, isUnassigned: isUnassigned, passesStaff: passesStaff,
+    staffChoices: staffChoices, defaultStaff: defaultStaff, assigneeSaved: assigneeSaved, settledAssignee: settledAssignee, applyAssignee: applyAssignee,
+    assigneeLines: assigneeLines, detailLines: detailLines,
     failureText: failureText, buildUpdate: buildUpdate, attentionItems: attentionItems, tokenSub: tokenSub, addIntent: addIntent, stashDraft: stashDraft,
     addLost: addLost, removeLostMemo: removeLostMemo, dismissLost: dismissLost,
     mergeRecords: mergeRecords, newerState: newerState, perfResult: perfResult, perfServerFields: perfServerFields,
