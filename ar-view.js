@@ -151,11 +151,49 @@
   // 控えが消えるのは、利用者が1件ずつ「消す」ときと、同じ内容の保存が成功したとき（その内容の控えだけ）
 
   // 控えを足す。空のメモは足さない（残すものが無い）。同じ請求に同じ内容の控えが既にあれば足さない
+  // Google の ID トークン（JWT）の本文から sub を読む。署名は確かめない（確かめるのはサーバ）。
+  // 画面の中で「控えの持ち主」を見分けるためだけに使う。読めなければ null（W6 後の確認 第1巡 指摘3）
+  function tokenSub(token) {
+    try {
+      var part = String(token || '').split('.')[1];
+      if (!part) return null;
+      var b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var sub = JSON.parse(atob(b64)).sub;
+      return typeof sub === 'string' && sub ? sub : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function addLost(lost, id, partner, text, memo) {
     if (memo === null || memo === undefined || memo === '') return lost;
     var e = lost[id] || (lost[id] = { partner: partner || '', items: [] });
     if (!e.items.some(function (x) { return x.memo === memo; })) e.items.push({ text: text || '', memo: memo });
     return lost;
+  }
+
+  // メモを持たない控え（連絡状況だけ・メモを消すだけの、保存されなかった変更）。説明だけを残し、同じ説明は足さない。
+  // 保存が成功しても自動では外さない（「消す」で外す）（W6 後の確認 第2巡 指摘1）
+  function addIntent(lost, id, partner, text) {
+    if (!text) return lost;
+    var e = lost[id] || (lost[id] = { partner: partner || '', items: [] });
+    if (!e.items.some(function (x) { return x.memo === null && x.text === text; })) e.items.push({ text: text, memo: null });
+    return lost;
+  }
+
+  // 拒否・サインイン切れで詳細を閉じるときの、書きかけの控え方。
+  // メモを書き換えていればメモの控え（連絡状況も変えていれば説明に書く）。メモが無い変更は説明だけの控え
+  function stashDraft(lost, id, partner, card, draftStatus, draftMemo) {
+    var ds = draftStatus !== null && draftStatus !== undefined && draftStatus !== card.status ? draftStatus : null;
+    var dm = draftMemo !== null && draftMemo !== undefined && draftMemo !== card.memo ? draftMemo : null;
+    var why = 'サインインが切れた・許可されなかったため保存していません';
+    if (dm) return addLost(lost, id, partner, why + (ds ? '。連絡状況「' + ds + '」も保存していません' : ''), dm);
+    var parts = [];
+    if (ds) parts.push('連絡状況を「' + ds + '」にする');
+    if (dm === '') parts.push('メモを消す');
+    if (!parts.length) return lost;
+    return addIntent(lost, id, partner, why + '（' + parts.join('・') + '）。サインインし直してから、もう一度操作してください');
   }
 
   // 保存できた内容と同じ控えだけを外す
@@ -198,7 +236,7 @@
     STATUSES: STATUSES, norm: norm, matchesQuery: matchesQuery, passesDays: passesDays, filterCards: filterCards,
     sortCards: sortCards, memoExcerpt: memoExcerpt, ageClass: ageClass, ageLabel: ageLabel, yen: yen, jpDate: jpDate,
     summarize: summarize, historyLines: historyLines, shortAt: shortAt, classifyResponse: classifyResponse,
-    failureText: failureText, buildUpdate: buildUpdate, attentionItems: attentionItems,
+    failureText: failureText, buildUpdate: buildUpdate, attentionItems: attentionItems, tokenSub: tokenSub, addIntent: addIntent, stashDraft: stashDraft,
     addLost: addLost, removeLostMemo: removeLostMemo, dismissLost: dismissLost
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

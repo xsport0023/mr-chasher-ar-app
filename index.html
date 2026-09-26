@@ -218,7 +218,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     unsettled: {},        // 応答が分からなかった保存・移動: 請求ID → { opId, kind: save|drag, lostMemo, partner, to }。確定するまでその請求を操作させない
     lost: {},             // 保存されなかったメモの控え: 請求ID → { partner, items: [{ text, memo }] }。請求ごとに複数件（続けて失敗しても上書きしない）。
                           // 1件ずつ「消す」か、同じ内容の保存が成功するまで残す。一覧から消えても「要確認」から取り出せる（ar-view.js の addLost など）
-    inflight: 0
+    inflight: 0,
+    // サインインの世代。サインイン・サインアウト・サインイン切れ・拒否のたびに進める。
+    // 前の世代で始めた読み込みの応答は、画面へ反映しない（W6 後の確認 第1巡 指摘2）
+    authGen: 0, listGen: -1,
+    // 控え（lost・unsettled）の持ち主。別の人がサインインしたら、前の人の控えはしまっておき、同じ人が戻れば出す（同 指摘3）
+    ownerKey: null, stashes: {}
   };
   // ドラッグはマウス・トラックパッドなど「細かく指し示せる道具」が1つでもあれば有効（タッチパネル付きのパソコンを含む）。
   // スマートフォン（指だけ）は無効のまま（計画 §3-5・G10）。指でなぞるドラッグには対応しない
@@ -298,6 +303,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (r.kind !== 'fail') return false;
     if (r.code === 'UNAUTHENTICATED') {
       S.token = null;
+      S.authGen++;
       clearShownData();
       showScreen('signin', 'サインインの期限が切れました。もう一度サインインしてください。');
       return true;
@@ -305,6 +311,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (r.code === 'FORBIDDEN') {
       S.token = null;
       S.deniedSub = r.json.sub || '';
+      S.authGen++;
       clearShownData();
       showScreen('denied');
       return true;
@@ -314,8 +321,13 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 
   // 拒否・サインイン切れのときに、前に読み込んでいた請求の内容を画面から消す（W6 で見つかった不具合。計画 §6-20）。
   // 詳細は書き込みの途中（S.busy）でも閉じる。保存されなかったメモの控え（S.lost）と未確定の操作（S.unsettled）は
-  // 本人のものなので消さない（サインインし直せば要確認に戻る）
+  // 本人のものなので消さない（サインインし直せば要確認に戻る）。
+  // 詳細の書きかけ（送った保存を含む）は、消す前にその人の控えへ移す。連絡状況だけ・メモを消すだけの変更も、
+  // 説明だけの控えとして残す（W6 後の確認 第1巡 指摘1・第2巡 指摘1）
   function clearShownData() {
+    var id = S.openId;
+    var card = id ? findCard(id) : null;
+    if (card && !locked(id)) V.stashDraft(S.lost, id, card.partner, card, S.draftStatus, S.draftMemo);
     S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null;
     S.detailGen++;
     S.tabs = null; S.fetchedAt = ''; S.warnings = [];
@@ -330,13 +342,15 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // ---- サインイン（Google Identity Services） ----
   function onCredential(resp) {
     S.token = resp.credential;
+    S.authGen++;
     start();
   }
   function renderGoogleButton() {
     var slot = document.getElementById('gsi-slot');
     if (!slot) return;
     if (MOCK) {
-      slot.innerHTML = '<button type="button" class="button primary" data-mock-signin>（作り物）サインイン</button>';
+      slot.innerHTML = '<button type="button" class="button primary" data-mock-signin>（作り物）サインイン</button> ' +
+        '<button type="button" class="button ghost" data-mock-signin="b">（作り物）別の人でサインイン</button>';
       return;
     }
     var tries = 0;
@@ -354,17 +368,20 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }
   function signOut() {
     if (!MOCK && window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
-    S.token = null; S.user = null; S.tabs = null; closeDetail(true);
+    S.token = null; S.user = null; S.tabs = null; S.authGen++; closeDetail(true);
     showScreen('signin', 'サインアウトしました。');
   }
 
   // ---- 起動と一覧 ----
   async function start() {
     showScreen('loading');
+    var g = S.authGen;
     var r = await api('bootstrap');
+    if (g !== S.authGen) return;       // 待つ間にサインインし直した・切れた
     if (handleAuthFailure(r)) return;
     if (r.kind !== 'ok') { showScreen('error', V.failureText(r.kind, r.code)); return; }
     S.user = r.json.user;
+    useStashOf(V.tokenSub(S.token) || S.user.email);
     $('#who').textContent = S.user.email;
     $('#staff').innerHTML = (r.json.staffOptions || ['全社']).map(function (o) { return '<option>' + esc(o) + '</option>'; }).join('') +
       '<option disabled>担当者A（準備中）</option><option disabled>担当者B（準備中）</option>';
@@ -372,15 +389,28 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     await loadList();
   }
 
-  // 一覧を取る。読むだけなので、壊れた応答・打ち切り・通信の失敗は1回だけ自動で取り直す（W1 で分かったこと1）
+  // 控えの持ち主を切り替える。今の持ち主の控えはしまい、新しい持ち主の控え（無ければ空）を出す
+  function useStashOf(key) {
+    if (S.ownerKey === key) return;
+    if (S.ownerKey !== null) S.stashes[S.ownerKey] = { lost: S.lost, unsettled: S.unsettled };
+    var st = S.stashes[key] || { lost: {}, unsettled: {} };
+    delete S.stashes[key];
+    S.lost = st.lost; S.unsettled = st.unsettled; S.ownerKey = key;
+  }
+
+  // 一覧を取る。読むだけなので、壊れた応答・打ち切り・通信の失敗は1回だけ自動で取り直す（W1 で分かったこと1）。
+  // 「取り直し中」はサインインの世代ごと。前の世代の取り直しが残っていても、新しい世代は待たずに取る（その応答は捨てられる）
   async function loadList() {
-    if (S.listBusy) return;
-    S.listBusy = true;
+    if (S.listBusy && S.listGen === S.authGen) return;
+    var g = S.authGen;
+    S.listBusy = true; S.listGen = g;
     $('#refresh').disabled = true;
     if (!S.tabs) showScreen('loading');
     try {
       var r = await api('list');
+      if (g !== S.authGen) return;     // 待つ間にサインインが切れた・拒否された・入れ替わった
       if (r.kind === 'broken' || r.kind === 'timeout' || r.kind === 'network') r = await api('list');
+      if (g !== S.authGen) return;
       if (handleAuthFailure(r)) return;
       if (r.kind !== 'ok') {
         var why = r.kind === 'fail' && r.code === 'MF_PAGE_LIMIT' ? '件数が上限（1,000件）を超えたため、一部だけを表示することはしません。管理者に連絡してください。' : V.failureText(r.kind, r.code);
@@ -398,8 +428,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       }
       showScreen('main');
     } finally {
-      S.listBusy = false;
-      $('#refresh').disabled = false;
+      if (S.listGen === g) { S.listBusy = false; $('#refresh').disabled = false; }
     }
   }
 
@@ -526,8 +555,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 
   // 記録を取り直す。世代が変わっていれば捨てる。記録の先頭が一覧の値より新しければ、一覧のカードもそれに合わせる
   async function fetchDetail(id, gen) {
+    var g = S.authGen;
     var r = await api('detail', { billingId: id });
-    if (S.openId !== id || gen !== S.detailGen) return false;
+    if (g !== S.authGen || S.openId !== id || gen !== S.detailGen) return false;
     if (handleAuthFailure(r)) return false;
     if (r.kind !== 'ok') { S.detail = { loading: false, records: S.detail ? S.detail.records : [], error: V.failureText(r.kind, r.code) }; renderDetail(); return false; }
     var recs = r.json.records || [];
@@ -626,8 +656,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       out += '<div class="notice lost-memo" role="note">あなたが書いたメモ（保存できたかを確かめています。必要ならコピーしてください）<textarea readonly>' + esc(u.lostMemo) + '</textarea></div>';
     }
     (has(S.lost, id) ? S.lost[id].items : []).forEach(function (it, idx) {
-      out += '<div class="notice lost-memo" role="note">保存されなかったメモ' + (it.text ? '（' + esc(it.text) + '）' : '') +
-        '。必要ならコピーして、メモ欄に貼り直してください<textarea readonly>' + esc(it.memo) + '</textarea>' +
+      out += '<div class="notice lost-memo" role="note">' + (it.memo === null
+        ? '保存されなかった変更（' + esc(it.text) + '）'
+        : '保存されなかったメモ' + (it.text ? '（' + esc(it.text) + '）' : '') + '。必要ならコピーして、メモ欄に貼り直してください<textarea readonly>' + esc(it.memo) + '</textarea>') +
         '<button type="button" class="button small ghost" data-dismiss-lost="' + esc(id) + '" data-idx="' + idx + '">この控えを消す</button></div>';
     });
     return out;
@@ -822,7 +853,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     else if (b.dataset.dismissLost) { V.dismissLost(S.lost, b.dataset.dismissLost, Number(b.dataset.idx)); renderAttention(); if (S.openId) renderDetail(); }
     else if (b.hasAttribute('data-retry')) { if (S.user) loadList(); else start(); }
     else if (b.hasAttribute('data-signout')) signOut();
-    else if (b.hasAttribute('data-mock-signin')) onCredential({ credential: 'mock' });
+    else if (b.hasAttribute('data-mock-signin')) onCredential({ credential: b.dataset.mockSignin === 'b' ? window.AR_MOCK_TOKEN_B : 'mock' });
   }, true);
 
   document.addEventListener('input', function (e) {
