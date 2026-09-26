@@ -232,12 +232,78 @@
     return out;
   }
 
+
+  // ---- 計画 ar-app-perf（速度改善）K2: 詳細の記録の併合 ----
+  // 記録の集合を記録ID で重ねずに合わせ、新しい順に並べる。届いた順に関係なく同じ結果になる（計画 §3-2）
+  function mergeRecords(a, b) {
+    var byId = {};
+    (a || []).concat(b || []).forEach(function (r) { if (r && typeof r.recordId === 'number') byId[r.recordId] = r; });
+    return Object.keys(byId).map(function (k) { return byId[k]; }).sort(function (x, y) { return y.recordId - x.recordId; });
+  }
+
+  // カードの状態を記録へ合わせるのは、記録ID が今より新しいときだけ（古い応答で戻さない）
+  function newerState(card, st) {
+    return !!card && !!st && typeof st.lastRecordId === 'number' && st.lastRecordId >= (card.lastRecordId || 0);
+  }
+
+  // ---- 計画 ar-app-perf §3-3（軽い計測 L） ----
+  // 応答の種類を、計測の「結果」の値にする（サーバの許可値 AR_PERF_RESULTS と同じ）
+  function perfResult(r) {
+    if (!r) return 'network';
+    if (r.kind === 'ok') return 'ok';
+    if (r.kind === 'timeout' || r.kind === 'broken' || r.kind === 'network') return r.kind;
+    var c = r.code;
+    if (c === 'CONFLICT') return 'conflict';
+    if (c === 'PAID_OR_OUT_OF_SCOPE' || c === 'NOT_FOUND') return 'paid';
+    if (c === 'UNAUTHENTICATED' || c === 'FORBIDDEN') return 'auth';
+    if (c === 'CANCELLED') return 'cancelled';
+    return 'error';
+  }
+
+  // 応答の perf から、計測の行に写すサーバの時間（許可した欄だけ）
+  var PERF_SERVER_FIELDS = ['tokenMs', 'tokenCached', 'usersMs', 'mfMs', 'recordsMs', 'mfGetOneMs'];
+  function perfServerFields(json) {
+    var out = {};
+    if (!json) return out;
+    if (typeof json.serverMs === 'number') out.serverMs = json.serverMs;
+    var p = json.perf || {};
+    PERF_SERVER_FIELDS.forEach(function (k) {
+      if (k === 'tokenCached' ? typeof p[k] === 'boolean' : typeof p[k] === 'number') out[k] = p[k];
+    });
+    return out;
+  }
+
+  // 端末の待ち行列（持ち主ごと）。上限と期限を超えた古い行を捨て、捨てた数を返す
+  var PERF_QUEUE_MAX = 200;
+  var PERF_QUEUE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+  function perfQueueAdd(queue, rows, nowMs) {
+    var q = (queue || []).concat(rows || []);
+    var before = q.length;
+    q = q.filter(function (r) { return typeof r.ts === 'number' && nowMs - r.ts <= PERF_QUEUE_AGE_MS; });
+    if (q.length > PERF_QUEUE_MAX) q = q.slice(q.length - PERF_QUEUE_MAX);
+    return { queue: q, dropped: before - q.length };
+  }
+  // サーバが受け取ったと答えた行だけ外す
+  function perfQueueRemove(queue, mids) {
+    var gone = {};
+    (mids || []).forEach(function (m) { gone[m] = true; });
+    return (queue || []).filter(function (r) { return !gone[r.mid]; });
+  }
+  // 送る形（端末の中だけで使う ts を外す）
+  function perfWire(row) {
+    var out = {};
+    Object.keys(row).forEach(function (k) { if (k !== 'ts') out[k] = row[k]; });
+    return out;
+  }
+
   var api = {
     STATUSES: STATUSES, norm: norm, matchesQuery: matchesQuery, passesDays: passesDays, filterCards: filterCards,
     sortCards: sortCards, memoExcerpt: memoExcerpt, ageClass: ageClass, ageLabel: ageLabel, yen: yen, jpDate: jpDate,
     summarize: summarize, historyLines: historyLines, shortAt: shortAt, classifyResponse: classifyResponse,
     failureText: failureText, buildUpdate: buildUpdate, attentionItems: attentionItems, tokenSub: tokenSub, addIntent: addIntent, stashDraft: stashDraft,
-    addLost: addLost, removeLostMemo: removeLostMemo, dismissLost: dismissLost
+    addLost: addLost, removeLostMemo: removeLostMemo, dismissLost: dismissLost,
+    mergeRecords: mergeRecords, newerState: newerState, perfResult: perfResult, perfServerFields: perfServerFields,
+    perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;

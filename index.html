@@ -219,11 +219,16 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     lost: {},             // 保存されなかったメモの控え: 請求ID → { partner, items: [{ text, memo }] }。請求ごとに複数件（続けて失敗しても上書きしない）。
                           // 1件ずつ「消す」か、同じ内容の保存が成功するまで残す。一覧から消えても「要確認」から取り出せる（ar-view.js の addLost など）
     inflight: 0,
+    // 背景の読み取り（開いている詳細の記録の読み込み）の数。これだけは保存の開始を妨げない（計画 ar-app-perf §3-2 K2）
+    bgInflight: 0,
     // サインインの世代。サインイン・サインアウト・サインイン切れ・拒否のたびに進める。
     // 前の世代で始めた読み込みの応答は、画面へ反映しない（W6 後の確認 第1巡 指摘2）
     authGen: 0, listGen: -1,
     // 控え（lost・unsettled）の持ち主。別の人がサインインしたら、前の人の控えはしまっておき、同じ人が戻れば出す（同 指摘3）
-    ownerKey: null, stashes: {}
+    ownerKey: null, stashes: {},
+    // 持ち主（ownerKey）を決めたサインインの世代。今の世代と同じときだけ、計測の行をその持ち主のものとして扱う
+    // （A2 第1巡 指摘1: 切り替えの途中に届いた前の人の応答・起動に失敗した人の行を、別の持ち主へ入れない）
+    ownerGen: -1
   };
   // ドラッグはマウス・トラックパッドなど「細かく指し示せる道具」が1つでもあれば有効（タッチパネル付きのパソコンを含む）。
   // スマートフォン（指だけ）は無効のまま（計画 §3-5・G10）。指でなぞるドラッグには対応しない
@@ -249,30 +254,47 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     S.inflight = Math.max(0, S.inflight - 1);
     if (!S.inflight) { clearTimeout(slowTimer); slowTimer = null; $('#slow').hidden = true; }
   }
-  async function api(action, extra) {
+  // opts: ctx（計測の場面。あれば要求ID を付けて行を残す）・retry（取り直しの番号）・bg（背景の読み取り。K2）
+  async function api(action, extra, opts) {
+    opts = opts || {};
+    var rid = opts.ctx ? newOpId() : '';
     var payload = Object.assign({ action: action, idToken: S.token }, extra || {});
+    if (rid) payload.rid = rid;
+    var t0 = performance.now();
+    var r = null;
     beginWait();
+    if (opts.bg) S.bgInflight++;
     try {
-      if (MOCK) return V.classifyResponse(await window.AR_MOCK_API(payload));
-      var ctrl = new AbortController();
-      var timer = setTimeout(function () { ctrl.abort(); }, C.TIMEOUT_MS);
-      try {
-        var res = await fetch(C.GAS_URL, { method: 'POST', body: new URLSearchParams({ payload: JSON.stringify(payload) }), signal: ctrl.signal });
-        return V.classifyResponse({ text: await res.text() });
-      } catch (e) {
-        return V.classifyResponse(e && e.name === 'AbortError' ? { aborted: true } : { networkError: true });
-      } finally {
-        clearTimeout(timer);
-      }
+      r = await send(payload);
+      return r;
     } finally {
       endWait();
+      if (opts.bg) S.bgInflight = Math.max(0, S.bgInflight - 1);
+      if (opts.ctx) perfReq(opts.ctx, action, opts.retry || 0, rid, t0, r);
     }
   }
+  async function send(payload) {
+    if (MOCK) return V.classifyResponse(await window.AR_MOCK_API(payload));
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, C.TIMEOUT_MS);
+    try {
+      var res = await fetch(C.GAS_URL, { method: 'POST', body: new URLSearchParams({ payload: JSON.stringify(payload) }), signal: ctrl.signal });
+      return V.classifyResponse({ text: await res.text() });
+    } catch (e) {
+      return V.classifyResponse(e && e.name === 'AbortError' ? { aborted: true } : { networkError: true });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  // 書き込みを妨げる通信の数（背景の読み取りを除く）
+  function fgInflight() { return S.inflight - S.bgInflight; }
 
-  // 書き込みを1つだけ走らせる。ほかの通信が走っていれば始めない。走っている間は画面全体を止める
-  async function exclusive(text, fn) {
-    if (S.busy || S.inflight > 0 || S.listBusy) {
+  // 書き込みを1つだけ走らせる。ほかの通信（背景の読み取りを除く）が走っていれば始めない。走っている間は画面全体を止める。
+  // kind は断ったときの計測の種類（save・drag・detail）
+  async function exclusive(text, fn, kind) {
+    if (S.busy || fgInflight() > 0 || S.listBusy) {
       toast('読み込みの途中です。終わってから、もう一度操作してください。', 'error');
+      perfRejected(kind || 'save');
       return false;
     }
     S.busy = { text: text };
@@ -304,6 +326,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (r.code === 'UNAUTHENTICATED') {
       S.token = null;
       S.authGen++;
+      forgetUser();
       clearShownData();
       showScreen('signin', 'サインインの期限が切れました。もう一度サインインしてください。');
       return true;
@@ -312,11 +335,21 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       S.token = null;
       S.deniedSub = r.json.sub || '';
       S.authGen++;
+      forgetUser();
       clearShownData();
       showScreen('denied');
       return true;
     }
     return false;
+  }
+
+  // サインイン切れ・拒否のときに、前の利用者の表示を消す。控えの持ち主（ownerKey）は残す（次に起動した人が
+  // 同じ人なら控えを戻し、別の人なら applyBoot の useStashOf でしまう）。
+  // ★ S.user を残すと、次の人の起動が失敗した後の「再試行」が起動を済んだものと見て、前の人の表示・控えのまま
+  //   一覧だけを取り直してしまう（A2 第2巡 指摘1。フェーズ1 の版にもあった経路）
+  function forgetUser() {
+    S.user = null;
+    $('#who').textContent = '';
   }
 
   // 拒否・サインイン切れのときに、前に読み込んでいた請求の内容を画面から消す（W6 で見つかった不具合。計画 §6-20）。
@@ -373,20 +406,21 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }
 
   // ---- 起動と一覧 ----
+  // 起動は list の1往復（計画 ar-app-perf §3-1 K1）。list の応答に利用者・既定値が入っている
   async function start() {
     showScreen('loading');
-    var g = S.authGen;
-    var r = await api('bootstrap');
-    if (g !== S.authGen) return;       // 待つ間にサインインし直した・切れた
-    if (handleAuthFailure(r)) return;
-    if (r.kind !== 'ok') { showScreen('error', V.failureText(r.kind, r.code)); return; }
-    S.user = r.json.user;
+    await loadList(perfScene('boot'));
+  }
+
+  // 利用者・担当・既定の日数を画面へ入れる（list か bootstrap の応答から）
+  function applyBoot(info) {
+    S.user = info.user;
     useStashOf(V.tokenSub(S.token) || S.user.email);
+    S.ownerGen = S.authGen;
     $('#who').textContent = S.user.email;
-    $('#staff').innerHTML = (r.json.staffOptions || ['全社']).map(function (o) { return '<option>' + esc(o) + '</option>'; }).join('') +
+    $('#staff').innerHTML = (info.staffOptions || ['全社']).map(function (o) { return '<option>' + esc(o) + '</option>'; }).join('') +
       '<option disabled>担当者A（準備中）</option><option disabled>担当者B（準備中）</option>';
-    if (r.json.defaults && typeof r.json.defaults.minDays === 'number') { S.days = r.json.defaults.minDays; $('#days').value = String(S.days); }
-    await loadList();
+    if (info.defaults && typeof info.defaults.minDays === 'number') { S.days = info.defaults.minDays; $('#days').value = String(S.days); }
   }
 
   // 控えの持ち主を切り替える。今の持ち主の控えはしまい、新しい持ち主の控え（無ければ空）を出す
@@ -400,22 +434,37 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 
   // 一覧を取る。読むだけなので、壊れた応答・打ち切り・通信の失敗は1回だけ自動で取り直す（W1 で分かったこと1）。
   // 「取り直し中」はサインインの世代ごと。前の世代の取り直しが残っていても、新しい世代は待たずに取る（その応答は捨てられる）
-  async function loadList() {
+  // bootCtx があれば起動（K1）: 応答の利用者・既定値を先に入れる。古いサーバ（list に利用者が無い）なら bootstrap で補う（計画 §5-4）
+  async function loadList(bootCtx) {
     if (S.listBusy && S.listGen === S.authGen) return;
     var g = S.authGen;
+    var boot = !!bootCtx;
+    var ctx = bootCtx || perfScene('list');
     S.listBusy = true; S.listGen = g;
     $('#refresh').disabled = true;
     if (!S.tabs) showScreen('loading');
     try {
-      var r = await api('list');
+      var r = await api('list', null, { ctx: ctx });
       if (g !== S.authGen) return;     // 待つ間にサインインが切れた・拒否された・入れ替わった
-      if (r.kind === 'broken' || r.kind === 'timeout' || r.kind === 'network') r = await api('list');
+      if (r.kind === 'broken' || r.kind === 'timeout' || r.kind === 'network') r = await api('list', null, { ctx: ctx, retry: 1 });
       if (g !== S.authGen) return;
       if (handleAuthFailure(r)) return;
+      if (boot) {
+        var info = r.json && r.json.user ? r.json : null;
+        if (!info && r.kind === 'ok') {
+          var rb = await api('bootstrap', null, { ctx: ctx });
+          if (g !== S.authGen) return;
+          if (handleAuthFailure(rb)) return;
+          if (rb.kind !== 'ok') { showScreen('error', V.failureText(rb.kind, rb.code)); perfEnd(ctx, V.perfResult(rb)); return; }
+          info = rb.json;
+        }
+        if (info) applyBoot(info);
+      }
       if (r.kind !== 'ok') {
         var why = r.kind === 'fail' && r.code === 'MF_PAGE_LIMIT' ? '件数が上限（1,000件）を超えたため、一部だけを表示することはしません。管理者に連絡してください。' : V.failureText(r.kind, r.code);
         if (S.tabs) toast('一覧を取り直せませんでした: ' + why + '（前回の内容を表示しています）', 'error');
         else showScreen('error', why);
+        perfEnd(ctx, V.perfResult(r));
         return;
       }
       S.tabs = r.json.tabs;
@@ -427,6 +476,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         toast('開いていた請求は入金済みになり、一覧から消えました。');
       }
       showScreen('main');
+      perfEnd(ctx, 'ok');
     } finally {
       if (S.listGen === g) { S.listBusy = false; $('#refresh').disabled = false; }
     }
@@ -535,8 +585,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     S.openId = id; S.openPartner = card.partner; S.draftStatus = null; S.draftMemo = null; S.notice = null;
     S.detail = { loading: true, records: [] };
     var gen = ++S.detailGen;
+    var ctx = has(S.unsettled, id) ? null : perfScene('detail');
     renderDetail(true);
     renderMain();
+    if (ctx) ctx.readyMs = Math.round(performance.now() - ctx.t0);   // 保存ボタンが押せるようになった時点（K2 で記録を待たない）
     // 前の保存・移動が未確定なら、記録を読む代わりに確定を頼む（確定の答えに記録も入っている）
     if (has(S.unsettled, id)) {
       S.notice = { kind: 'unknown', text: '前の操作が保存できたかを確かめています…' };
@@ -550,19 +602,22 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       }
       return;
     }
-    await fetchDetail(id, gen);
+    await fetchDetail(id, gen, ctx);
   }
 
-  // 記録を取り直す。世代が変わっていれば捨てる。記録の先頭が一覧の値より新しければ、一覧のカードもそれに合わせる
-  async function fetchDetail(id, gen) {
+  // 記録を取り直す。世代が変わっていれば捨てる。
+  // 記録は記録ID で重ねずに合わせる（保存の応答で先に入った1行を消さない）。カードは記録ID が今より新しいときだけ合わせる（計画 ar-app-perf §3-2 K2）。
+  // ctx があれば開いた直後の読み込み（背景の読み取り。保存の開始を妨げない）
+  async function fetchDetail(id, gen, ctx) {
     var g = S.authGen;
-    var r = await api('detail', { billingId: id });
+    var r = await api('detail', { billingId: id }, ctx ? { ctx: ctx, bg: true } : null);
+    if (ctx) perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs });
     if (g !== S.authGen || S.openId !== id || gen !== S.detailGen) return false;
     if (handleAuthFailure(r)) return false;
     if (r.kind !== 'ok') { S.detail = { loading: false, records: S.detail ? S.detail.records : [], error: V.failureText(r.kind, r.code) }; renderDetail(); return false; }
-    var recs = r.json.records || [];
+    var recs = V.mergeRecords(S.detail ? S.detail.records : [], r.json.records || []);
     var card = findCard(id);
-    if (card && recs.length && recs[0].recordId !== card.lastRecordId) {
+    if (card && recs.length && recs[0].recordId > (card.lastRecordId || 0)) {
       card.status = recs[0].status; card.memo = recs[0].memo; card.lastRecordId = recs[0].recordId;
       renderMain();
     }
@@ -608,8 +663,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       return '<button type="button" class="choice" data-choice="' + s + '" aria-pressed="' + (current === s) + '"' + (busy ? ' disabled' : '') + '><span class="dot"></span>' + s + '</button>';
     }).join('');
     var d = S.detail || { loading: true, records: [] };
-    var hist = d.loading ? '<div class="history-item">読み込み中…</div>'
-      : (V.historyLines(d.records).map(function (h) { return '<div class="history-item"><small>' + esc(h.when) + ' ・ ' + esc(h.who) + '</small><strong>' + esc(h.content) + '</strong></div>'; }).join('') || '<div class="history-item">記録はまだありません</div>');
+    // 読み込み中でも、保存の応答で先に入った記録は出す（K2）
+    var lines = V.historyLines(d.records).map(function (h) { return '<div class="history-item"><small>' + esc(h.when) + ' ・ ' + esc(h.who) + '</small><strong>' + esc(h.content) + '</strong></div>'; }).join('');
+    var hist = d.loading ? lines + '<div class="history-item">読み込み中…</div>' : (lines || '<div class="history-item">記録はまだありません</div>');
     if (d.error) hist = '<div class="history-item">記録を読めませんでした（' + esc(d.error) + '）。<button type="button" class="button small ghost" data-reload-detail>読み直す</button></div>' + hist;
     $('#detail').innerHTML =
       '<div class="overlay" data-overlay><article class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title" tabindex="-1">' +
@@ -624,7 +680,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<textarea class="note-area" id="memo" maxlength="5000" placeholder="先方への連絡内容や次の予定を記入"' + (busy ? ' disabled' : '') + '>' + esc(memo) + '</textarea>' +
       '<div class="limit" id="limit">' + memo.length + ' / 5,000文字</div></section>' +
       '<section><h3>記録（新しい順）</h3><div class="history">' + hist + '</div></section></div>' +
-      '<div class="detail-actions"><button type="button" class="button teal" data-save' + (busy || d.loading ? ' disabled' : '') + '>変更をまとめて保存</button>' +
+      '<div class="detail-actions"><button type="button" class="button teal" data-save' + (busy ? ' disabled' : '') + '>変更をまとめて保存</button>' +
       '<span class="feedback" role="status">' + (S.notice && (S.notice.kind === 'saved' || S.notice.kind === 'info') ? esc(S.notice.text) : '') + '</span></div>' +
       '</div></article></div>';
     document.body.style.overflow = 'hidden';
@@ -672,23 +728,25 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var body = V.buildUpdate(card, S.draftStatus, S.draftMemo);
     if (!body) { S.notice = { kind: 'info', text: '変更はありません' }; renderDetail(); return; }
     body.opId = newOpId();
-    exclusive('保存しています…', function () { return saveInner(id, body); });
+    var ctx = perfScene('save');
+    exclusive('保存しています…', function () { return saveInner(id, body, ctx); }, 'save');
   }
 
-  async function saveInner(id, body) {
+  async function saveInner(id, body, ctx) {
     var lostMemo = body.memo !== undefined ? body.memo : null;
     S.notice = null;
-    var r = await api('update', body);
+    var r = await api('update', body, { ctx: ctx });
     var card = findCard(id);
+    perfEnd(ctx, V.perfResult(r));
     if (handleAuthFailure(r)) return;
     if (r.kind === 'ok') {
       if (card) applyState(card, r.json.state);
       // 保存されなかったメモと同じ内容が保存できたら、控えは役目を終えた
       V.removeLostMemo(S.lost, id, r.json.state.memo);
-      if (!r.json.unchanged && S.detail && S.openId === id &&
-        !S.detail.records.some(function (x) { return x.recordId === r.json.state.lastRecordId; })) {
-        S.detail.records.unshift({ recordId: r.json.state.lastRecordId, at: r.json.state.at, status: r.json.state.status, memo: r.json.state.memo,
-          statusChanged: body.status !== undefined, memoChanged: body.memo !== undefined, email: S.user ? S.user.email : '' });
+      // 記録の欄へ保存した1行を足す。詳細の読み込み中でも足し、後から届く記録と記録ID で合わせる（K2）
+      if (!r.json.unchanged && S.detail && S.openId === id) {
+        S.detail.records = V.mergeRecords(S.detail.records, [{ recordId: r.json.state.lastRecordId, at: r.json.state.at, status: r.json.state.status, memo: r.json.state.memo,
+          statusChanged: body.status !== undefined, memoChanged: body.memo !== undefined, email: S.user ? S.user.email : '' }]);
       }
       S.draftStatus = null; S.draftMemo = null;
       S.notice = { kind: r.json.unchanged ? 'info' : 'saved', text: r.json.unchanged ? '変更はありません' : '✓ 保存しました' };
@@ -710,21 +768,23 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     S.draftStatus = null; S.draftMemo = null;
     S.busy = { text: '保存できたかを確かめています…' };
     renderBusy();
-    await settleInner(id);
+    await settleInner(id, perfScene('settle'));
   }
 
   // 未確定の操作の「確定」を、書き込みとして1つだけ走らせる
   function runSettle(id) {
-    return exclusive('保存できたかを確かめています…', function () { return settleInner(id); });
+    var ctx = perfScene('settle');
+    return exclusive('保存できたかを確かめています…', function () { return settleInner(id, ctx); }, 'detail');
   }
 
   // 未確定の操作の「確定」を頼む（§6-13）。サーバはロックの中で、その操作IDの記録があれば written、
   // 無ければ取り消しの印を付けて cancelled を返す。どちらでも、その後にその操作が書かれることは無い。
   // 答えを受け取れなければ未確定のまま残し、その請求を操作させない（要確認から、いつでも確かめ直せる）
-  async function settleInner(id) {
+  async function settleInner(id, ctx) {
     var u = S.unsettled[id];
     if (!u) return;
-    var r = await api('detail', { billingId: id, settleOpId: u.opId });
+    var r = await api('detail', { billingId: id, settleOpId: u.opId }, ctx ? { ctx: ctx } : null);
+    if (ctx) perfEnd(ctx, r.kind === 'ok' && r.json.settled ? r.json.settled : r.kind === 'ok' ? 'unknown' : V.perfResult(r));
     if (handleAuthFailure(r)) return;
     var card = findCard(id);
     var open = S.openId === id;
@@ -775,8 +835,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     renderDetail();
   }
 
+  // 記録ID が今より古い状態では戻さない（K2。遅れて届いた応答でカードを巻き戻さない）
   function applyState(card, st) {
-    if (!st) return;
+    if (!V.newerState(card, st)) return;
     card.status = st.status; card.memo = st.memo; card.lastRecordId = st.lastRecordId;
   }
 
@@ -784,16 +845,18 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   function moveByDrag(id, toStatus) {
     var card = findCard(id);
     if (!card || card.status === toStatus || locked(id)) return;
-    exclusive('移動しています…', function () { return moveInner(id, toStatus); });
+    var ctx = perfScene('drag');
+    exclusive('移動しています…', function () { return moveInner(id, toStatus, ctx); }, 'drag');
   }
 
-  async function moveInner(id, toStatus) {
+  async function moveInner(id, toStatus, ctx) {
     var card = findCard(id);
     var from = card.status;
     var opId = newOpId();
     card.status = toStatus;            // 落とした時点で移しておく
     renderMain();
-    var r = await api('update', { billingId: id, status: toStatus, baseRecordId: card.lastRecordId || 0, opId: opId });
+    var r = await api('update', { billingId: id, status: toStatus, baseRecordId: card.lastRecordId || 0, opId: opId }, { ctx: ctx });
+    perfEnd(ctx, V.perfResult(r));
     card = findCard(id) || card;
     if (handleAuthFailure(r)) return;
     if (r.kind === 'ok') {
@@ -806,7 +869,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       S.unsettled[id] = { opId: opId, kind: 'drag', partner: card.partner, to: toStatus };
       S.busy = { text: '移動できたかを確かめています…' };
       renderBusy();
-      await settleInner(id);
+      await settleInner(id, perfScene('settle'));
       return;
     }
     card.status = from;                // 元のレーンへ戻す
@@ -851,7 +914,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       runSettle(sid);
     }
     else if (b.dataset.dismissLost) { V.dismissLost(S.lost, b.dataset.dismissLost, Number(b.dataset.idx)); renderAttention(); if (S.openId) renderDetail(); }
-    else if (b.hasAttribute('data-retry')) { if (S.user) loadList(); else start(); }
+    // 今のサインインで起動が済んでいれば一覧だけ、済んでいなければ起動から（A2 第2巡 指摘1）
+    else if (b.hasAttribute('data-retry')) { if (S.user && S.ownerGen === S.authGen) loadList(); else start(); }
     else if (b.hasAttribute('data-signout')) signOut();
     else if (b.hasAttribute('data-mock-signin')) onCredential({ credential: b.dataset.mockSignin === 'b' ? window.AR_MOCK_TOKEN_B : 'mock' });
   }, true);
@@ -877,7 +941,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   document.addEventListener('dragstart', function (e) {
     var c = e.target.closest && e.target.closest('.invoice-card[draggable=true]');
     if (!c) return;
-    if (S.busy || S.inflight > 0) { e.preventDefault(); toast('読み込みの途中です。終わってから、もう一度操作してください。', 'error'); return; }
+    if (S.busy || fgInflight() > 0) { e.preventDefault(); toast('読み込みの途中です。終わってから、もう一度操作してください。', 'error'); perfRejected('drag'); return; }
     e.dataTransfer.setData('text/plain', c.dataset.open);
     e.dataTransfer.effectAllowed = 'move';
     c.classList.add('dragging');
@@ -906,6 +970,82 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   window.addEventListener('beforeunload', function (e) {
     if (S.busy || Object.keys(S.unsettled).length) { e.preventDefault(); e.returnValue = ''; }
   });
+
+  // ---- 軽い計測（計画 ar-app-perf §3-3 L）----
+  // ★ 利用者には見せず、業務の通信・書き込みの排他・待ちの表示に関わらない（計画レビュー第1巡 指摘2）。
+  //   計測の失敗はすべて握りつぶす（業務を止めない）。端末の待ち行列は持ち主ごと（A の行は A のサインイン中だけ送る。同 指摘3）
+  var P = { device: canDrag ? 'pc' : 'phone', sim: MOCK || new URLSearchParams(location.search).get('sim') === '1', sending: false, dropped: {} };
+  // 場面は始めたときのサインインの世代を持つ。終わったときに世代が変わっていれば行を捨てる（A2 第1巡 指摘1）
+  function perfScene(name) { return { sid: newOpId(), scene: name, t0: performance.now(), seq: 0, rows: [], done: false, gen: S.authGen }; }
+  // 今の世代で持ち主が決まっていれば、その持ち主。決まっていなければ null（起動の前・起動に失敗した）
+  function perfOwner() { return S.ownerKey && S.ownerGen === S.authGen ? S.ownerKey : null; }
+  function perfBase(ctx) { return { mid: newOpId(), sid: ctx.sid, scene: ctx.scene, device: P.device, sim: P.sim, ts: Date.now() }; }
+  function perfReq(ctx, action, retry, rid, t0, r) {
+    try {
+      ctx.rows.push(Object.assign(perfBase(ctx), { rid: rid, action: action, seq: ++ctx.seq, retry: retry, result: V.perfResult(r),
+        rtMs: Math.round(performance.now() - t0) }, r && r.json ? V.perfServerFields(r.json) : {}));
+    } catch (e) { /* 計測の失敗は無視 */ }
+  }
+  function perfEnd(ctx, result, extra) {
+    try {
+      if (!ctx || ctx.done) return;
+      ctx.done = true;
+      if (ctx.gen !== S.authGen) return;  // 始めた後にサインインが替わった（前の人の応答）。別の持ち主へ入れない
+      var key = perfOwner();
+      if (!key) return;                  // 持ち主が分からない（起動に失敗した）行は残さない
+      var row = Object.assign(perfBase(ctx), { rid: '', action: '', seq: 0, retry: 0, result: result, totalMs: Math.round(performance.now() - ctx.t0) }, extra || {});
+      var k = 'arPerfQ:' + key;
+      var a = V.perfQueueAdd(perfLoad(k), ctx.rows.concat([row]), Date.now());
+      perfStore(k, a.queue);
+      P.dropped[key] = (P.dropped[key] || 0) + a.dropped;
+      setTimeout(perfFlush, 1500);
+    } catch (e) { /* 計測の失敗は無視 */ }
+  }
+  // 断られた操作（K3 の材料）: 操作できる状態に戻るまでの待ちを数える
+  function perfRejected(kind) {
+    try {
+      var ctx = perfScene('rejected');
+      var iv = setInterval(function () {
+        if ((!S.busy && fgInflight() === 0 && !S.listBusy) || performance.now() - ctx.t0 > 60000) { clearInterval(iv); perfEnd(ctx, 'rejected', { action: kind }); }
+      }, 100);
+    } catch (e) { /* 計測の失敗は無視 */ }
+  }
+  function perfLoad(k) { try { var v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+  function perfStore(k, q) { try { if (q.length) localStorage.setItem(k, JSON.stringify(q)); else localStorage.removeItem(k); } catch (e) { /* 保存できなければ計測を捨てる */ } }
+  // 業務の通信が走っていないときに、今サインインしている人の行だけを送る。受け取られた行だけ端末から消す
+  async function perfFlush() {
+    var key = perfOwner();               // 今の資格情報の持ち主の行だけを、その資格情報で送る
+    if (P.sending || !S.token || !key || S.busy || S.inflight > 0 || S.listBusy) return;
+    var k = 'arPerfQ:' + key;
+    var q = perfLoad(k);
+    if (!q.length) return;
+    P.sending = true;
+    try {
+      var r = await perfSend({ action: 'perf', idToken: S.token, rows: q.slice(0, 20).map(V.perfWire), dropped: P.dropped[key] || 0 });
+      if (r && r.kind === 'ok' && Array.isArray(r.json.accepted)) {
+        perfStore(k, V.perfQueueRemove(perfLoad(k), r.json.accepted));
+        P.dropped[key] = 0;
+        if (perfLoad(k).length) setTimeout(perfFlush, 3000);
+      }
+    } catch (e) { /* 次の機会に */ } finally {
+      P.sending = false;
+    }
+  }
+  // 業務の api とは別の経路（通信数・待ちの表示・計測の対象に入れない）
+  async function perfSend(payload) {
+    if (MOCK) return V.classifyResponse(await window.AR_MOCK_API(payload));
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, C.TIMEOUT_MS);
+    try {
+      var res = await fetch(C.GAS_URL, { method: 'POST', body: new URLSearchParams({ payload: JSON.stringify(payload) }), signal: ctrl.signal });
+      return V.classifyResponse({ text: await res.text() });
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  setInterval(perfFlush, 20000);
 
   // ---- 起動 ----
   if (!C.GAS_URL && !MOCK) { showScreen('config'); return; }
