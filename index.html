@@ -54,7 +54,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .content-title h2{margin:0;font-size:19px}.content-title span{font-size:12px;font-weight:800;color:#665e76}
 .list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;align-items:start}
 .lane{border:3px solid #1d1830;border-radius:23px;padding:13px;min-width:0;min-height:330px;background:#ffe0e7;box-shadow:5px 6px 0 #1d1830;transition:outline-color .1s}
-.lane:nth-child(2){background:#ffdfa1}.lane:nth-child(3){background:#c9f4e7}
+.lane[data-lane="連絡済み"]{background:#ffdfa1}.lane[data-lane="連絡あり"]{background:#c9f4e7}
 .lane.drop-target{outline:4px dashed #6556ed;outline-offset:3px}
 .lane-head{display:flex;justify-content:space-between;gap:5px;align-items:center;font-weight:950;margin:1px 2px 14px;font-size:13px}
 .lane-head b{background:#fff;border:2px solid #1d1830;border-radius:99px;padding:2px 7px}
@@ -83,7 +83,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .date{font-weight:700;color:#665e76}
 .status-chip{box-shadow:none;display:inline-flex;align-items:center;gap:5px;border-width:2px;padding:4px 9px;font-size:11px;font-weight:900;white-space:nowrap}
 .status-chip:before{content:'';height:8px;width:8px;border-radius:50%;background:currentColor;border:1px solid #1d1830}
-.status-untouched{background:#ffe0e4;color:#9d2848}.status-incoming{background:#ffe3a6;color:#755100}.status-contacted{background:#c6f4e7;color:#186754}
+.status-untouched{background:#ffe0e4;color:#9d2848}.status-contacted{background:#ffe3a6;color:#755100}.status-incoming{background:#c6f4e7;color:#186754}
 /* 詳細: 画面中央に重ねて開く（A-1） */
 .overlay{position:fixed;inset:0;z-index:20;background:#1c1839a9;display:grid;place-items:center;padding:22px;overflow:auto}
 .detail-panel{border:3px solid #1d1830;border-radius:24px;background:#fff;box-shadow:7px 8px 0 #1d1830;overflow:auto;max-width:960px;width:100%;max-height:calc(100vh - 44px)}
@@ -99,7 +99,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .choice{border:2px solid #1d1830;border-radius:13px;padding:9px 11px;font-size:12px;font-weight:900;background:#fff;box-shadow:2px 3px 0 #1d1830}
 .choice[aria-pressed=true]{background:#b7a4ff;box-shadow:inset 0 0 0 2px #fff,2px 3px 0 #1d1830}
 .choice .dot{display:inline-block;width:9px;height:9px;background:#ff7182;border:1px solid #1d1830;border-radius:50%;margin-right:5px}
-.choice[data-choice="連絡あり"] .dot{background:#ffd15a}.choice[data-choice="連絡済み"] .dot{background:#47d3aa}
+.choice[data-choice="連絡済み"] .dot{background:#ffd15a}.choice[data-choice="連絡あり"] .dot{background:#47d3aa}
 .detail-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;margin-top:23px}
 .note-area{width:100%;min-height:220px;border:2px solid #1d1830;border-radius:15px;padding:12px;resize:vertical;line-height:1.65;background:#fffdf8}
 .limit{text-align:right;color:#696176;font-size:11px;margin-top:4px}
@@ -172,7 +172,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       </div>
     </div>
     <div class="filters">
-      <label>経過日数<select class="control" id="days"><option value="0">すべて（期日前を含む）</option><option value="30" selected>30日以上</option><option value="60">60日以上</option><option value="90">90日以上</option></select></label>
+      <label>経過日数<select class="control" id="days"><option value="0">すべて（期日前を含む）</option><option value="1" selected>1日以上（期日を過ぎたもの）</option><option value="30">30日以上</option><option value="60">60日以上</option><option value="90">90日以上</option></select></label>
       <label class="search">取引先名・件名・請求番号・メモを検索<input class="control" id="search" type="search" placeholder="例：サンプル" autocomplete="off"></label>
       <label>並び順<select class="control" id="sort"><option value="age">経過日数の多い順</option><option value="amount">請求額の多い順</option><option value="client">取引先名順</option></select></label>
       <button type="button" class="button small ghost" data-refresh id="refresh">↻ 更新</button>
@@ -209,7 +209,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     screen: 'signin',     // signin / config / loading / error / denied / main
     screenMessage: '', deniedSub: '',
     tabs: null, fetchedAt: '', warnings: [], listBusy: false,
-    tab: '未入金', days: 30, query: '', sort: 'age',
+    tab: '未入金', days: 1, query: '', sort: 'age',
     openId: null, openPartner: '', detailGen: 0,
     detail: null,         // { loading, records, error }
     draftStatus: null, draftMemo: null,
