@@ -223,6 +223,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     staffSel: '全社',     // 右上の「担当」の選択（全社／営業のメール／未割り当て）
     notice: null,         // { kind: saved|info|conflict|paid|unknown|error, text, done }。★ 保存されなかったメモは知らせに持たせない（下の lost・unsettled が正本。W5 第4巡 指摘2）
     busy: null,           // 書き込み中: { text }。この間は画面全体を止める
+    closeAfterSave: null, // 保存できたときに、書き込みが終わってから詳細を閉じる印: { id, text }（ユーザー依頼 2026-09-26）
     unsettled: {},        // 応答が分からなかった保存・移動: 請求ID → { opId, kind: save|drag, lostMemo, partner, to }。確定するまでその請求を操作させない
     lost: {},             // 保存されなかったメモの控え: 請求ID → { partner, items: [{ text, memo }] }。請求ごとに複数件（続けて失敗しても上書きしない）。
                           // 1件ずつ「消す」か、同じ内容の保存が成功するまで残す。一覧から消えても「要確認」から取り出せる（ar-view.js の addLost など）
@@ -791,12 +792,22 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (!body) { S.notice = { kind: 'info', text: '変更はありません' }; renderDetail(); return; }
     body.opId = newOpId();
     var ctx = perfScene('save');
-    exclusive('保存しています…', function () { return saveInner(id, body, ctx); }, 'save');
+    exclusive('保存しています…', function () { return saveInner(id, body, ctx); }, 'save').then(function () { closeIfSaved(id); });
+  }
+
+  // 保存できたら詳細を閉じ、一覧の上の知らせで伝える（ユーザー依頼 2026-09-26）。書き込みの間は閉じられないので、書き込みが終わってから閉じる
+  function closeIfSaved(id) {
+    var c = S.closeAfterSave;
+    S.closeAfterSave = null;
+    if (!c || c.id !== id || S.openId !== id) return;
+    closeDetail(true);
+    toast(c.text);
   }
 
   async function saveInner(id, body, ctx) {
     var lostMemo = body.memo !== undefined ? body.memo : null;
     S.notice = null;
+    S.closeAfterSave = null;
     var r = await api('update', body, { ctx: ctx });
     var card = findCard(id);
     perfEnd(ctx, V.perfResult(r));
@@ -825,6 +836,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
             billingNumber: card ? card.billingNumber : '', sameBilling: true, from: prevAsg, to: st.assignee }]);
         }
       }
+      if (V.closeAfterSave(body, r.json)) S.closeAfterSave = { id: id, text: '✓ 「' + (card ? card.partner : S.openPartner) + '」を保存しました' };
       return;
     }
     if (r.kind === 'fail') {
@@ -845,6 +857,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     S.busy = { text: '保存できたかを確かめています…' };
     renderBusy();
     await settleInner(id, perfScene('settle'));
+    // 確かめた結果、担当も含めて保存できていたときだけ閉じる（知らせの種類 saved は settleInner がその場合だけ付ける）
+    if (!has(S.unsettled, id) && S.openId === id && S.notice && S.notice.kind === 'saved') {
+      S.closeAfterSave = { id: id, text: '✓ 「' + (card ? card.partner : S.openPartner) + '」の保存はできていました' };
+    }
   }
 
   // 未確定の操作の「確定」を、書き込みとして1つだけ走らせる

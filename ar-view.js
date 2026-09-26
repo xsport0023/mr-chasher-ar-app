@@ -87,6 +87,12 @@
     return !!state && typeof state.assignee === 'string' && state.assignee === body.assignee;
   }
 
+  // 「変更をまとめて保存」の後に詳細を閉じてよいか（ユーザー依頼 2026-09-26）。行を書いて保存でき、担当も送ったとおりに
+  // 保存できたときだけ閉じる。変更なし・担当が保存されなかったときは、知らせと控えを見せるため開いたままにする
+  function closeAfterSave(body, json) {
+    return !!(json && json.state && !json.unchanged && assigneeSaved(body, json.state));
+  }
+
   // 確定（settleOpId）の応答で、担当が保存できていたかを操作ごとの証拠（settledOp）で判断する（H1 実装レビュー第2巡 指摘1）。
   //   'saved'   … その操作の行で、送った担当に変えていた
   //   'notSaved'… その操作の行は担当を変えていない（旧サーバが書いた・別の値）
@@ -404,7 +410,7 @@
     sortCards: sortCards, memoExcerpt: memoExcerpt, ageClass: ageClass, ageLabel: ageLabel, yen: yen, jpDate: jpDate,
     summarize: summarize, historyLines: historyLines, shortAt: shortAt, classifyResponse: classifyResponse,
     ALL_STAFF: ALL_STAFF, UNASSIGNED: UNASSIGNED, assigneeLabel: assigneeLabel, isUnassigned: isUnassigned, passesStaff: passesStaff,
-    staffChoices: staffChoices, defaultStaff: defaultStaff, assigneeSaved: assigneeSaved, settledAssignee: settledAssignee, applyAssignee: applyAssignee,
+    staffChoices: staffChoices, defaultStaff: defaultStaff, assigneeSaved: assigneeSaved, closeAfterSave: closeAfterSave, settledAssignee: settledAssignee, applyAssignee: applyAssignee,
     assigneeLines: assigneeLines, detailLines: detailLines,
     failureText: failureText, buildUpdate: buildUpdate, attentionItems: attentionItems, tokenSub: tokenSub, addIntent: addIntent, stashDraft: stashDraft,
     addLost: addLost, removeLostMemo: removeLostMemo, dismissLost: dismissLost,
