@@ -104,7 +104,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .choice[aria-pressed=true]{background:#b7a4ff;box-shadow:inset 0 0 0 2px #fff,2px 3px 0 #1d1830}
 .choice .dot{display:inline-block;width:9px;height:9px;background:#ff7182;border:1px solid #1d1830;border-radius:50%;margin-right:5px}
 .choice[data-choice="連絡済み"] .dot{background:#ffd15a}.choice[data-choice="連絡あり"] .dot{background:#47d3aa}
-.detail-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;margin-top:23px}
+.detail-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
 .note-area{width:100%;min-height:220px;border:2px solid #1d1830;border-radius:15px;padding:12px;resize:vertical;line-height:1.65;background:#fffdf8}
 .limit{text-align:right;color:#696176;font-size:11px;margin-top:4px}
 .history{border:2px solid #1d1830;border-radius:15px;padding:0 13px;background:#faf8ff;max-height:300px;overflow:auto}
@@ -720,8 +720,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong><span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
       '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(card.status) + '</div></header>' +
       '<div class="detail-body">' + noticeHTML() + lostBoxHTML() +
-      '<h3>連絡状況を選ぶ</h3><div class="status-choices" role="group" aria-label="連絡状況">' + choices + '</div>' +
-      '<div class="detail-columns"><section><h3>メモ <small style="font-weight:500">（上書き）</small></h3>' +
+      // 左に連絡状況とメモ、右に担当と記録。左右の先頭をそろえる（ユーザー依頼 2026-09-27）
+      '<div class="detail-columns"><section><h3>連絡状況を選ぶ</h3><div class="status-choices" role="group" aria-label="連絡状況" style="margin-bottom:16px">' + choices + '</div>' +
+      '<h3>メモ <small style="font-weight:500">（上書き）</small></h3>' +
       '<textarea class="note-area" id="memo" maxlength="5000" placeholder="先方への連絡内容や次の予定を記入"' + (busy ? ' disabled' : '') + '>' + esc(memo) + '</textarea>' +
       '<div class="limit" id="limit">' + memo.length + ' / 5,000文字</div></section>' +
       '<section>' + assigneeHTML(card, busy) + '<h3>記録（新しい順）</h3><div class="history">' + hist + '</div></section></div>' +
@@ -749,7 +750,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var list = S.staff.filter(function (x) { return x.active; }).map(function (x) { return btn(x.email, x.name, false); });
     if (now && V.isUnassigned(S.staff, now)) list.unshift(btn(now, V.assigneeLabel(S.staff, now), true));   // 無効の営業は選び直せない
     list.push(btn('', '未割り当て', false));
-    return head + '<p class="assignee-note">同じ取引先のすべての請求に付きます。「変更をまとめて保存」で保存します。</p>' +
+    return head +
       '<div class="status-choices assignee-choices" role="group" aria-label="この取引先の担当" style="margin-bottom:16px">' + list.join('') + '</div>';
   }
 
