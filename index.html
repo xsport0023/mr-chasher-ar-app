@@ -220,7 +220,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
                           // 1件ずつ「消す」か、同じ内容の保存が成功するまで残す。一覧から消えても「要確認」から取り出せる（ar-view.js の addLost など）
     inflight: 0
   };
-  var canDrag = window.matchMedia('(pointer: fine)').matches && !window.matchMedia('(any-pointer: coarse)').matches;
+  // ドラッグはマウス・トラックパッドなど「細かく指し示せる道具」が1つでもあれば有効（タッチパネル付きのパソコンを含む）。
+  // スマートフォン（指だけ）は無効のまま（計画 §3-5・G10）。指でなぞるドラッグには対応しない
+  // （W6 でタッチパネル付きのノートPCでドラッグできなかった報告を受けて変更。2026-09-26 ユーザー判断＝案A）
+  var canDrag = window.matchMedia('(any-pointer: fine)').matches;
   function locked(id) { return has(S.unsettled, id); }
 
   // 操作ID（保存・移動のたびに作る。サーバが記録行に残し、「確定して」で照らし合わせる）
