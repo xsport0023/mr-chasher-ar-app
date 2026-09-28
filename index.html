@@ -52,9 +52,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .filters .hint{font-size:11px;color:#716983;margin-left:auto;align-self:center}
 .content-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px}
 .content-title h2{margin:0;font-size:19px}.content-title span{font-size:12px;font-weight:800;color:#665e76}
-.list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;align-items:stretch} /* 3レーンを最長のレーンの長さにそろえ、下の方でも短いレーンへドラッグできるようにする（ユーザー依頼 2026-09-28） */
+.list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:15px;align-items:stretch} /* レーンを最長のレーンの長さにそろえ、下の方でも短いレーンへドラッグできるようにする（ユーザー依頼 2026-09-28）。未納品を足して4列（§6-13） */
 .lane{border:3px solid #1d1830;border-radius:23px;padding:13px;min-width:0;min-height:330px;background:#ffe0e7;box-shadow:5px 6px 0 #1d1830;transition:outline-color .1s}
-.lane[data-lane="連絡済み"]{background:#ffdfa1}.lane[data-lane="連絡あり"]{background:#c9f4e7}
+.lane[data-lane="未納品"]{background:#dde3f3}.lane[data-lane="連絡済み"]{background:#ffdfa1}.lane[data-lane="連絡あり"]{background:#c9f4e7}
 .lane.drop-target{outline:4px dashed #6556ed;outline-offset:3px}
 .lane-head{display:flex;justify-content:space-between;gap:5px;align-items:center;font-weight:950;margin:1px 2px 14px;font-size:13px}
 .lane-head b{background:#fff;border:2px solid #1d1830;border-radius:99px;padding:2px 7px}
@@ -75,11 +75,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .assignee-choices .choice[aria-pressed=true]{background:#9be7d0}
 .assignee-note{font-size:11px;color:#665e76;margin:-4px 0 12px}
 .client{font-size:13px;font-weight:950;line-height:1.4;overflow-wrap:anywhere}
+.billing-no{font-size:11px;font-weight:800;color:#665e76;margin-left:5px;white-space:nowrap} /* 取引先名の右横に請求番号（§6-13） */
 .subject{font-size:12px;color:#645d72;margin:4px 0 11px;overflow-wrap:anywhere;display:block}
-/* 金額の右にメモの先頭2行。メモの有無でカードの高さを変えない（高さを2行分に固定） */
-.money-row{display:flex;align-items:flex-start;gap:10px;min-height:2.9em}
+/* 金額の右にメモの先頭3行。メモの有無でカードの高さを変えない（高さを3行分に固定。§6-13） */
+.money-row{display:flex;align-items:flex-start;gap:10px;min-height:4.35em}
 .amount{font-size:21px;letter-spacing:-.04em;font-weight:950;white-space:nowrap;flex-shrink:0;line-height:1.3}
-.memo-excerpt{flex:1;min-width:0;font-size:11px;line-height:1.45;height:2.9em;color:#4c4560;white-space:pre-line;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere;border-left:2px dotted #cfc6d9;padding-left:8px}
+.memo-excerpt{flex:1;min-width:0;font-size:11px;line-height:1.45;height:4.35em;color:#4c4560;white-space:pre-line;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow-wrap:anywhere;border-left:2px dotted #cfc6d9;padding-left:8px}
 .memo-excerpt:empty{border-left-color:transparent}
 .card-bottom{border-top:2px dashed #d8d1e2;margin-top:10px;padding-top:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:space-between;font-size:11px;font-weight:750}
 .age{background:#ffe2e1;border:2px solid #1d1830;border-radius:99px;padding:4px 8px;font-size:11px;font-weight:900}
@@ -87,7 +88,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .date{font-weight:700;color:#665e76}
 .status-chip{box-shadow:none;display:inline-flex;align-items:center;gap:5px;border-width:2px;padding:4px 9px;font-size:11px;font-weight:900;white-space:nowrap}
 .status-chip:before{content:'';height:8px;width:8px;border-radius:50%;background:currentColor;border:1px solid #1d1830}
-.status-untouched{background:#ffe0e4;color:#9d2848}.status-contacted{background:#ffe3a6;color:#755100}.status-incoming{background:#c6f4e7;color:#186754}
+.status-undelivered{background:#dde3f3;color:#3d4f86}.status-untouched{background:#ffe0e4;color:#9d2848}.status-contacted{background:#ffe3a6;color:#755100}.status-incoming{background:#c6f4e7;color:#186754}
 /* 詳細: 画面中央に重ねて開く（A-1） */
 .overlay{position:fixed;inset:0;z-index:20;background:#1c1839a9;display:grid;place-items:center;padding:22px;overflow:auto}
 .detail-panel{border:3px solid #1d1830;border-radius:24px;background:#fff;box-shadow:7px 8px 0 #1d1830;overflow:auto;max-width:960px;width:100%;max-height:calc(100vh - 44px)}
@@ -103,7 +104,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .choice{border:2px solid #1d1830;border-radius:13px;padding:9px 11px;font-size:12px;font-weight:900;background:#fff;box-shadow:2px 3px 0 #1d1830}
 .choice[aria-pressed=true]{background:#b7a4ff;box-shadow:inset 0 0 0 2px #fff,2px 3px 0 #1d1830}
 .choice .dot{display:inline-block;width:9px;height:9px;background:#ff7182;border:1px solid #1d1830;border-radius:50%;margin-right:5px}
-.choice[data-choice="連絡済み"] .dot{background:#ffd15a}.choice[data-choice="連絡あり"] .dot{background:#47d3aa}
+.choice[data-choice="未納品"] .dot{background:#8e9fd6}.choice[data-choice="連絡済み"] .dot{background:#ffd15a}.choice[data-choice="連絡あり"] .dot{background:#47d3aa}
 .detail-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
 .note-area{width:100%;min-height:220px;border:2px solid #1d1830;border-radius:15px;padding:12px;resize:vertical;line-height:1.65;background:#fffdf8}
 .limit{text-align:right;color:#696176;font-size:11px;margin-top:4px}
@@ -141,6 +142,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   .overlay{padding:8px;place-items:stretch}.detail-panel{max-height:calc(100dvh - 16px)}
   .detail-columns{grid-template-columns:1fr}.detail-header{padding:16px}.detail-body{padding:16px}.state-screen{padding:22px}
 }
+@media(min-width:761px) and (max-width:1000px){.list{grid-template-columns:repeat(2,minmax(0,1fr))}} /* 4列では狭すぎる幅は2列×2段（§6-13） */
 @media(max-width:390px){.stat strong{font-size:15px}.button.small{padding:6px 8px}.session{gap:7px}.section-head h2{font-size:18px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
@@ -589,7 +591,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       }).join('') + '</section>';
   }
 
-  function statusClass(s) { return { 'ノータッチ': 'untouched', '連絡あり': 'incoming', '連絡済み': 'contacted' }[s] || 'untouched'; }
+  function statusClass(s) { return { '未納品': 'undelivered', 'ノータッチ': 'untouched', '連絡あり': 'incoming', '連絡済み': 'contacted' }[s] || 'untouched'; }
   function statusBadge(s) { return '<span class="status-chip status-' + statusClass(s) + '">' + esc(s) + '</span>'; }
   function dateLabel(tab) { return tab === '未入金' ? '支払期日' : '作成日'; }
   function dateOf(card, tab) { return tab === '未入金' ? card.dueDate : card.createdAt; }
@@ -598,12 +600,13 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var unsettled = locked(c.billingId);
     var drag = canDrag && !unsettled ? ' draggable="true"' : '';
     return '<button type="button" class="invoice-card' + (S.openId === c.billingId ? ' is-active' : '') + (unsettled ? ' is-pending' : '') + '"' + drag +
-      ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(c.status) +
+      ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + (c.billingNumber ? ' 請求番号 ' + esc(c.billingNumber) : '') + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(c.status) +
       (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (unsettled ? ' 未確定' : '') + ' 詳細を開く">' +
-      '<span class="card-top"><span><span class="client">' + esc(c.partner) + '</span><span class="subject">' + esc(c.title) + '</span></span>' +
+      '<span class="card-top"><span><span class="client">' + esc(c.partner) + '</span>' +
+      (c.billingNumber ? '<span class="billing-no" title="請求番号">No.' + esc(c.billingNumber) + '</span>' : '') + '<span class="subject">' + esc(c.title) + '</span></span>' +
       (S.features ? '<span class="assignee-tag' + (V.isUnassigned(S.staff, c.assignee) && !c.assignee ? ' none' : '') + '" title="担当">' + esc(V.assigneeLabel(S.staff, c.assignee)) + '</span>' : '') +
       (unsettled ? '<span class="unsettled-mark">未確定</span>' : '') + '</span>' +
-      '<span class="money-row"><span class="amount">' + V.yen(c.amount) + '</span><span class="memo-excerpt" title="メモの先頭2行">' + esc(V.memoExcerpt(c.memo)) + '</span></span>' +
+      '<span class="money-row"><span class="amount">' + V.yen(c.amount) + '</span><span class="memo-excerpt" title="メモの先頭3行">' + esc(V.memoExcerpt(c.memo)) + '</span></span>' +
       '<span class="card-bottom"><span class="date">' + dateLabel(S.tab) + ' ' + V.jpDate(dateOf(c, S.tab)) + '</span>' +
       '<span class="age ' + V.ageClass(c.days) + '">' + V.ageLabel(S.tab, c.days) + '</span>' + statusBadge(c.status) + '</span></button>';
   }
@@ -611,7 +614,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   function listHTML(data) {
     if (!data.length) return '<div class="state-screen list-empty"><span class="symbol" aria-hidden="true">✓</span><h2>条件に合う請求はありません</h2><p>経過日数や検索の条件を変えて確認してください。</p></div>';
     return V.STATUSES.map(function (status) {
-      var items = data.filter(function (x) { return x.status === status; });
+      var items = data.filter(function (x) { return V.laneOf(x.status) === status; });
       return '<section class="lane" data-lane="' + status + '" aria-label="' + status + '"><div class="lane-head"><span>' + status + '</span><b>' + items.length + '件</b></div>' +
         '<div class="lane-stack">' + (items.map(cardHTML).join('') || '<div class="lane-empty">該当なし</div>') + '</div></section>';
     }).join('');

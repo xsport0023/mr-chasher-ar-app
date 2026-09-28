@@ -6,8 +6,15 @@
 (function (root) {
   'use strict';
 
-  // レーンと詳細のボタンの並び。ノータッチ → 連絡済み（こちらから連絡した）→ 連絡あり（相手から連絡が来た）（2026-09-26 ユーザー指示）
-  var STATUSES = ['ノータッチ', '連絡済み', '連絡あり'];
+  // レーンと詳細のボタンの並び。未納品 → ノータッチ → 連絡済み（こちらから連絡した）→ 連絡あり（相手から連絡が来た）
+  // （2026-09-26 ユーザー指示。未納品は 2026-09-28 ユーザー依頼 ar-app-assignee §6-13。記録の無い請求の置き場はノータッチのまま）
+  var STATUSES = ['未納品', 'ノータッチ', '連絡済み', '連絡あり'];
+
+  // カードを置くレーン。この画面が知らない連絡状況（後の版で足した値など）はノータッチのレーンに出し、一覧から消さない
+  // （§6-13 レビュー第1巡 major 1 の処置。ユーザー判断 2026-09-28「安全な戻し先を用意」）。札には元の値をそのまま出す
+  function laneOf(status) {
+    return STATUSES.indexOf(status) >= 0 ? status : 'ノータッチ';
+  }
 
   // 検索のための正規化（全角・半角と大文字・小文字の違いを無くす）
   function norm(s) {
@@ -152,10 +159,10 @@
     return (cards || []).slice().sort(function (a, b) { return cmp(a, b) || byNumber(a, b); });
   }
 
-  // カードに出すメモの抜粋: 先頭2行（3行目以降は出さない）。見た目の2行での切り詰めは CSS が行う
+  // カードに出すメモの抜粋: 先頭3行（4行目以降は出さない。2026-09-28 ユーザー依頼で2行から3行へ。§6-13）。見た目の3行での切り詰めは CSS が行う
   function memoExcerpt(memo) {
     var lines = String(memo || '').split(/\r?\n/);
-    return lines.slice(0, 2).join('\n').slice(0, 200);
+    return lines.slice(0, 3).join('\n').slice(0, 300);
   }
 
   function ageClass(days) {
@@ -406,7 +413,7 @@
   }
 
   var api = {
-    STATUSES: STATUSES, norm: norm, matchesQuery: matchesQuery, passesDays: passesDays, filterCards: filterCards,
+    STATUSES: STATUSES, laneOf: laneOf, norm: norm, matchesQuery: matchesQuery, passesDays: passesDays, filterCards: filterCards,
     sortCards: sortCards, memoExcerpt: memoExcerpt, ageClass: ageClass, ageLabel: ageLabel, yen: yen, jpDate: jpDate,
     summarize: summarize, historyLines: historyLines, shortAt: shortAt, classifyResponse: classifyResponse,
     ALL_STAFF: ALL_STAFF, UNASSIGNED: UNASSIGNED, assigneeLabel: assigneeLabel, isUnassigned: isUnassigned, passesStaff: passesStaff,
