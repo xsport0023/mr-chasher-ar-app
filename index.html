@@ -52,7 +52,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .filters .hint{font-size:11px;color:#716983;margin-left:auto;align-self:center}
 .content-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px}
 .content-title h2{margin:0;font-size:19px}.content-title span{font-size:12px;font-weight:800;color:#665e76}
-.list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;align-items:start}
+.list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;align-items:stretch} /* 3レーンを最長のレーンの長さにそろえ、下の方でも短いレーンへドラッグできるようにする（ユーザー依頼 2026-09-28） */
 .lane{border:3px solid #1d1830;border-radius:23px;padding:13px;min-width:0;min-height:330px;background:#ffe0e7;box-shadow:5px 6px 0 #1d1830;transition:outline-color .1s}
 .lane[data-lane="連絡済み"]{background:#ffdfa1}.lane[data-lane="連絡あり"]{background:#c9f4e7}
 .lane.drop-target{outline:4px dashed #6556ed;outline-offset:3px}
