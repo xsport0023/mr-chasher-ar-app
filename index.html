@@ -65,6 +65,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .invoice-card.is-active{outline:4px solid #6556ed;outline-offset:3px}
 .invoice-card.is-pending{opacity:.55}
 .attention{border:3px solid #1d1830;border-radius:20px;background:#fff4cc;box-shadow:4px 5px 0 #1d1830;padding:14px 16px;margin:0 0 20px}.attention h3{margin:0 0 8px;font-size:15px}.attention-item{border-top:1px dashed #cfc6d9;padding:10px 0;font-size:13px;line-height:1.6}.attention-item:first-of-type{border-top:0}.attention-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px}.attention textarea{width:100%;min-height:70px;margin-top:5px;border:2px dashed #1d1830;border-radius:10px;padding:8px;background:#fff}.muted{font-size:11px;color:#6a6278}
+.move-bar{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:800}.move-bar:empty{display:none}
 .unsettled-mark{font-size:11px;border:2px solid #1d1830;background:#ffecb4;border-radius:99px;padding:3px 7px;font-weight:900;white-space:nowrap}
 .invoice-card[draggable=true]{cursor:grab}
 .invoice-card.dragging{opacity:.4}
@@ -182,6 +183,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       <label class="search">取引先名・件名・請求番号・メモを検索<input class="control" id="search" type="search" placeholder="例：サンプル" autocomplete="off"></label>
       <label>並び順<select class="control" id="sort"><option value="age">経過日数の多い順</option><option value="amount">請求額の多い順</option><option value="client">取引先名順</option></select></label>
       <button type="button" class="button small ghost" data-refresh id="refresh">↻ 更新</button>
+      <span class="move-bar" id="move-bar" role="status"></span>
       <span class="hint">最終取得：<span id="last-fetch">—</span></span>
     </div>
     <div id="warnings"></div>
@@ -192,7 +194,6 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 </div>
 
 <div id="detail"></div>
-<div id="slow" class="banner warn" role="status" hidden>応答を待っています…（最大15秒）</div>
 <div id="toast" class="banner toast" role="status" hidden></div>
 
 <script>
@@ -227,6 +228,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     // 書き込み中の1件: { opId, id（請求ID）, partnerId, partner, kind: save|drag|settle, wish（希望の全項目）, gen（サインインの世代）, owner }。
     // 応答・後始末は、S.write がその操作のままで、世代が一致するときだけ当てる（§8-13-1 の2・§8-14-2 の I1）
     write: null,
+    // 段D（計画 ar-app-perf §9）: ドラッグの保存待ち。送る前の移動（請求ID → V.moveAdd の項目）と、送り出しの実行者の状態。
+    // moveState: empty（無い）／waiting（3秒を数えている）／active（送り出している。書き込みの枠が空くのを待つ間も含む）／stopped（止まった）。
+    // moveOp は今送っている1件（S.write と同じもの）。送り出しの実行者は1つだけで、合図（kickMoves）は moveOp がある間は何もしない（§9-9-2）
+    moves: {}, moveSeq: 0, moveState: 'empty', moveTimer: null, moveOp: null, moveStopWhy: '', moveTally: { saved: 0, failed: 0, unknown: 0 },
+    moveInflight: 0,      // 移動の送り出しの通信（update・確定）の数。詳細の readyMs はこの待ちを含めない（§9-11）
     composing: false, refreshPending: false,   // 入力の変換中は描き直しを待つ（段C C2 R2）
     unsettled: {},        // 応答が分からなかった保存・移動: 請求ID → { opId, kind: save|drag, lostMemo, partner, partnerId, assignee, to, wish }。確定するまでその請求を操作させない
     lost: {},             // 保存されなかったメモの控え: 請求ID → { partner, items: [{ text, memo }] }。請求ごとに複数件（続けて失敗しても上書きしない）。
@@ -258,17 +264,19 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }
 
   // ---- 通信（計画 §3-5。URLSearchParams の payload でプリフライトを起こさない） ----
-  var slowTimer = null;
+  // 画面下の「応答を待っています」の帯は出さない（段D §9-4。読み込みの情報をメッセージで出さない）
+  var idleWaiters = [];
   function beginWait() {
     S.inflight++;
     syncSaveButton();
-    if (!slowTimer) slowTimer = setTimeout(function () { $('#slow').hidden = false; }, C.SLOW_NOTICE_MS);
   }
   function endWait() {
     S.inflight = Math.max(0, S.inflight - 1);
-    if (!S.inflight) { clearTimeout(slowTimer); slowTimer = null; $('#slow').hidden = true; }
+    if (fgInflight() === 0 && idleWaiters.length) { var w = idleWaiters; idleWaiters = []; w.forEach(function (f) { f(); }); }
     checkReady();
   }
+  // 前景の通信（背景の読み取りを除く）がすべて戻るまで待つ。新しい世代の起動は、前の世代の書き込みの通信が戻ってから（§9-10-1 の5）
+  function untilNoForeground() { return fgInflight() === 0 ? Promise.resolve() : new Promise(function (res) { idleWaiters.push(res); }); }
   // opts: ctx（計測の場面。あれば要求ID を付けて行を残す）・retry（取り直しの番号）・bg（背景の読み取り。K2）・
   //       keepalive（書き込み。ページを閉じても送り切る指定。段C §8-11-2 の8）
   async function api(action, extra, opts) {
@@ -279,12 +287,14 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var t0 = performance.now();
     var r = null;
     if (opts.bg) S.bgInflight++;       // 背景の読み取りを、一瞬でも前景として数えない（保存ボタンの待ちの表示。段C C2 R1）
+    if (opts.move) S.moveInflight++;   // 移動の送り出しの通信（詳細の readyMs はこれを待たない。§9-11）
     beginWait();
     try {
       r = await send(payload, !!opts.keepalive);
       return r;
     } finally {
       if (opts.bg) S.bgInflight = Math.max(0, S.bgInflight - 1);
+      if (opts.move) S.moveInflight = Math.max(0, S.moveInflight - 1);
       endWait();
       if (opts.ctx) perfReq(opts.ctx, action, opts.retry || 0, rid, t0, r);
     }
@@ -310,29 +320,48 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // 書き込みを始めてよいか。書き込み中・ほかの通信（背景の読み取りを除く）・一覧の取り直しの間は始めない。
   // サインインが切れた後も、前の書き込みの要求が戻るまでは始めない（fgInflight。同時に走る書き込みは常に1本以下）
   function canWrite() { return !S.write && fgInflight() === 0 && !S.listBusy; }
+  // 移動の保存待ち・送信中があるか（段D）。ある間は、詳細の保存・更新・サインアウトを始めない（§9-2・§9-3 の8・9）
+  function hasMoves() { return Object.keys(S.moves).length > 0; }
+  function movesPending() { return hasMoves() || !!S.moveOp; }
+  function moveWriting() { return !!(S.write && S.write.kind === 'drag'); }
+  // 詳細の保存を始めてよいか（移動を送り切るまで待たせる。§9-1）
+  function canSaveNow() { return canWrite() && !movesPending(); }
+  // 詳細の readyMs の「押せる」: 移動の保存待ち・送り出しの通信を待つ時間は含めない（§9-11）。そのほかは段C と同じ
+  function readyIgnoringMoves(id) {
+    var w = S.write && S.write.kind !== 'drag' ? S.write : null;
+    return !w && fgInflight() - S.moveInflight === 0 && !S.listBusy && !locked(id);
+  }
   // 詳細の「保存ボタンが押せるまで」を追う（段C C2 R1）。押せる＝書き込みを始めてよく、その請求が書き込み中・未確定でない。
   // 押せるようになる前に閉じた詳細は、readyMs を持たない行として残す（押せるまでに至らなかった標本。集計で別に数える。計画 §8-16）
   var readyWatch = null;   // { ctx, id }
-  function waitLabel() { return S.write ? '前の保存を待っています' : '読み込みを待っています'; }
+  function waitLabel() {
+    if (S.moveState === 'stopped' && movesPending()) return '止まっている移動があります';
+    if (movesPending()) return '移動の保存を待っています';
+    return S.write ? '前の保存を待っています' : '読み込みを待っています';
+  }
   // 保存ボタンの「待っています」を、描き直さずに今の状態へ合わせる（一覧の読み込み・通信の終わりで。段C C2 R1）
   function syncSaveButton() {
     var b = document.querySelector('#detail [data-save]');
     if (!b || b.hasAttribute('data-card-busy')) return;
-    var wait = !canWrite();
+    var wait = !canSaveNow();
     b.disabled = wait;
     b.textContent = wait ? waitLabel() : '変更をまとめて保存';
   }
+  // 通信の終わり・描き直しのたびに呼ばれる。移動の送り出しへも「書き込みの枠が空いたかもしれない」と合図する
+  // （§9-9-2。送っている間・数えている間・止まった間の合図は、kickMoves が何もしない）
   function checkReady() {
     syncSaveButton();
+    kickMoves('idle');
     var w = readyWatch;
     if (!w) return;
     if (S.openId !== w.id) { readyWatch = null; flushDetailPerf(w.ctx); return; }
-    if (canWrite() && !locked(w.id) && !(S.write && S.write.id === w.id)) {
+    if (readyIgnoringMoves(w.id)) {
       w.ctx.readyMs = Math.round(performance.now() - w.ctx.t0);
       readyWatch = null;
       flushDetailPerf(w.ctx);
     }
   }
+
   function flushDetailPerf(ctx) {
     if (ctx.pendingResult === undefined) return;   // 詳細の応答がまだ（応答のときにもう一度呼ばれる）
     var res = ctx.pendingResult;
@@ -340,7 +369,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     perfEnd(ctx, res, ctx.readyMs !== undefined ? { readyMs: ctx.readyMs } : {});
   }
   function refuseWrite(kind) {
-    toast(S.write ? '前の保存が終わってから、もう一度操作してください。' : '読み込みの途中です。終わってから、もう一度操作してください。', 'error');
+    toast(movesPending() ? '移動の保存が終わってから、もう一度操作してください。' : S.write ? '前の保存が終わってから、もう一度操作してください。' : '読み込みの途中です。終わってから、もう一度操作してください。', 'error');
     perfRejected(kind || 'save');
   }
   // 書き込みを1つだけ走らせる（段C: 画面は止めない）。kind は断ったときの計測の種類（save・drag・detail）。
@@ -378,6 +407,116 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     return { opId: op.opId, kind: op.kind === 'drag' ? 'drag' : 'save', partner: op.partner, partnerId: op.partnerId, billingNumber: op.billingNumber || '',
       lostMemo: typeof w.memo === 'string' && w.memo !== '' ? w.memo : null, assignee: w.assignee, to: w.status, wish: w };
   }
+  // ---- 段D: ドラッグの保存待ちと送り出し（計画 ar-app-perf §9-3・§9-9・§9-10） ----
+  // ドラッグはすぐには送らず保存待ちに入れ、最後のドラッグから3秒（または「今すぐ保存」）で、受け付けた順に1件ずつ送る。
+  // 送るのは今の書き込みの入口（runWrite → moveInner）で、書き込みは同時に1件のまま。サーバは変えない
+  var MOVE_BATCH_MS = 3000;            // 最後のドラッグから送り出しまで（ユーザーの提案 2026-09-30）
+  var moveKickPending = false;
+  // 送り出しの実行者への合図。timer（3秒の満了）・now（今すぐ保存）は送り出しを始める。
+  // idle（書き込み・通信の終わり）は、送り出している（active）ときだけ次を送る。送っている1件がある間はどの合図も何もしない
+  function kickMoves(reason) {
+    if (reason === 'idle') {
+      if (moveKickPending) return;     // 描き直しのたびに呼ばれるので、まとめて1回にする（同期の入れ子で送り始めない）
+      moveKickPending = true;
+      setTimeout(function () { moveKickPending = false; runMoves(); }, 0);
+      return;
+    }
+    clearMoveTimer();
+    if (hasMoves()) { S.moveState = 'active'; S.moveStopWhy = ''; }
+    renderMoveBar();
+    runMoves();
+  }
+  function runMoves() {
+    if (S.moveOp) return;
+    // 保存待ちが空になった: 1回だけ片付けて、まとめの知らせを出す（空のままの合図では何もしない。描き直しからの合図で繰り返さない）
+    if (!hasMoves()) { if (S.moveState !== 'empty') { clearMoveTimer(); S.moveState = 'empty'; finishMoves(); } return; }
+    if (S.moveState !== 'active') return;   // 数えている間・止まった間は送らない
+    if (!canWrite()) return;                // 書き込みの枠が空いたら、idle の合図でもう一度来る
+    sendNextMove();
+  }
+  function clearMoveTimer() { if (S.moveTimer) { clearTimeout(S.moveTimer); S.moveTimer = null; } }
+  // ドラッグを受け付けたら3秒を数え直す。保存待ちが空になったら（元へ戻した）数えるのをやめる
+  function restartMoveTimer() {
+    clearMoveTimer();
+    if (hasMoves()) {
+      S.moveState = 'waiting';
+      var g = S.authGen;
+      S.moveTimer = setTimeout(function () { S.moveTimer = null; if (g === S.authGen) kickMoves('timer'); }, MOVE_BATCH_MS);
+    } else if (S.moveOp) {
+      S.moveState = 'active';                // 送っている1件が終わったら、まとめの知らせを出す
+    } else {
+      S.moveState = 'empty';
+      finishMoves();
+    }
+  }
+  // 1件を送る。保存待ちの先頭を、送る直前に同期の処理の中で外し、操作ID を作って送信中の1件に結び付ける（§9-9-2）。
+  // 以後その希望は保存待ちに戻らない（止まった後の再開で、同じ希望を新しい操作ID で送り直さない）
+  async function sendNextMove() {
+    var e = V.moveTake(S.moves);
+    if (!e) return;
+    var card = findCard(e.id);
+    if (e.owner !== S.ownerKey || e.gen !== S.authGen || !card) {
+      // 持ち主・世代が今と違う（世代の切り替えで片付けるので、ふつうは起きない。§9-9-1）・一覧に無い: 送らずに要確認へ
+      parkMoveEntry(e, card ? 'サインインが切り替わったため移していません' : 'この請求は一覧にありませんでした。移していません');
+      if (e.gen === S.authGen) S.moveTally.failed++;
+      kickMoves('idle');
+      return;
+    }
+    var body = { billingId: e.id, status: e.to, baseRecordId: e.base, opId: newOpId() };
+    var op = newOp('drag', card, body);
+    var res = { o: 'discard' };
+    S.moveOp = op;
+    var started = await runWrite(op, async function () { res = await moveInner(op, body, e.ctx || perfScene('drag')); }, 'drag');
+    if (S.moveOp === op) S.moveOp = null;
+    if (!started) {                      // 書き込みの枠を取れなかった（runMoves が確かめているので、ふつうは起きない）: 保存待ちへ戻す
+      if (op.gen === S.authGen && !has(S.moves, e.id)) S.moves[e.id] = e;
+      return;
+    }
+    if (op.gen !== S.authGen || res.o === 'discard' || res.o === 'auth') return;   // 世代が変わった: 片付けは世代の切り替えが済ませた
+    if (res.o === 'stop') { stopMoves(res.why); return; }
+    kickMoves('idle');
+  }
+  // 送り出しを止める。残りは保存待ちのまま（印も残す）。再開は「今すぐ保存」か、新しいドラッグの3秒（§9-3 の6・§9-9-2）
+  function stopMoves(why) {
+    if (!hasMoves()) { S.moveState = 'empty'; finishMoves(); return; }
+    S.moveState = 'stopped';
+    S.moveStopWhy = why || '';
+    var t = S.moveTally;
+    toast('移動の保存を止めました（' + S.moveStopWhy + '）。「今すぐ保存」で続きを送ります。' +
+      (t.failed + t.unknown ? '保存できなかった・確かめられなかった移動は「要確認」を見てください。' : ''), 'error');
+    refreshViews();
+  }
+  // 送り出しが終わったら、まとめの知らせを1回だけ出す（1件ごとには出さない。§9-3 の10・§9-4）
+  function finishMoves() {
+    var t = S.moveTally;
+    S.moveTally = { saved: 0, failed: 0, unknown: 0 };
+    S.moveStopWhy = '';
+    var m = V.moveSummary(t.saved, t.failed, t.unknown);
+    if (m) toast(m.text, m.kind);
+    refreshViews();                      // 詳細の保存ボタン・「更新」・カードの印を、送り終えた状態へ描き直す
+  }
+  // 保存待ちの1件を、その持ち主の要確認へ（送っていないので書かれていないと決まっている）
+  function parkMoveEntry(e, text) {
+    var box = e.owner === S.ownerKey ? S.lost : (S.stashes[e.owner] || (S.stashes[e.owner] = { lost: {}, unsettled: {} })).lost;
+    V.addWish(box, e.id, e.partner, text, { status: e.to }, { key: 'move:' + e.gen + ':' + e.seq, billingNumber: e.billingNumber });
+  }
+  // 世代を切り替える前に、保存待ちの全件をその持ち主の要確認へ移し、送り出しを空にする（§9-9-1・§9-10-1）
+  function parkMoves() {
+    Object.keys(S.moves).forEach(function (k) { parkMoveEntry(S.moves[k], 'サインインが切り替わったため移していません'); });
+    S.moves = {};
+    clearMoveTimer();
+    S.moveState = 'empty'; S.moveOp = null; S.moveStopWhy = '';
+    S.moveTally = { saved: 0, failed: 0, unknown: 0 };
+  }
+  // 画面の上の「保存待ち n件」と「今すぐ保存」
+  function renderMoveBar() {
+    var el = document.getElementById('move-bar');
+    if (!el) return;
+    var n = Object.keys(S.moves).length + (S.moveOp ? 1 : 0);
+    el.innerHTML = !n ? '' : '保存待ち ' + n + '件' + (S.moveState === 'stopped' ? '（止まっています）' : '') +
+      (hasMoves() ? ' <button type="button" class="button small primary" data-move-now>今すぐ保存</button>' : '');
+  }
+
   // サインインが切れた・拒否された瞬間に、書き込み中の1件を持ち主の未確定にする。その操作の遅れて届いた応答は捨てる（§8-13-1 の2）
   function parkWrite() {
     var w = S.write;
@@ -393,7 +532,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // どの操作でも共通: サインイン切れ・許可なし は画面ごと切り替える。切り替えたら true
   function handleAuthFailure(r) {
     if (r.kind !== 'fail') return false;
-    if (r.code === 'UNAUTHENTICATED' || r.code === 'FORBIDDEN') parkWrite();   // 画面を切り替える前に（§8-13-1 の2）
+    if (r.code === 'UNAUTHENTICATED' || r.code === 'FORBIDDEN') { parkWrite(); parkMoves(); }   // 画面を切り替える前に（§8-13-1 の2・段D §9-10-1）
     if (r.code === 'UNAUTHENTICATED') {
       S.token = null;
       S.authGen++;
@@ -430,7 +569,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var id = S.openId;
     var card = id ? findCard(id) : null;
     if (card && !locked(id)) {
-      V.addWish(S.lost, id, card.partner, 'サインインが切れた・許可されなかったため保存していません。サインインし直してから、もう一度操作してください',
+      V.addWish(S.lost, id, card.partner, 'サインインが切れた・切り替わった・許可されなかったため保存していません。サインインし直してから、もう一度操作してください',
         V.draftWish(card, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null), { key: 'draft:' + newOpId(), billingNumber: card.billingNumber });
     }
     S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
@@ -445,7 +584,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }
 
   // ---- サインイン（Google Identity Services） ----
+  // 世代を切り替える前に、前の人の送信中・保存待ち・書きかけを、その人の控えへ移し、前の人の表示を消す（段D §9-10-1 の1〜3）。
+  // 新しい世代の起動は、前の世代の書き込みの通信が戻ってから（start）
   function onCredential(resp) {
+    parkWrite(); parkMoves();
+    if (S.tabs || S.openId) { forgetUser(); clearShownData(); }
     S.token = resp.credential;
     S.authGen++;
     start();
@@ -472,9 +615,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     })();
   }
   function signOut() {
+    if (movesPending()) { toast('移動の保存が終わってから、サインアウトしてください。', 'error'); return; }
     if (S.write) { toast('保存が終わってから、サインアウトしてください。', 'error'); return; }
     if (S.openId) { closeDetail(false); if (S.openId) return; }   // 書きかけがあれば閉じてよいか確かめる
     if (!MOCK && window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+    parkMoves();
     S.token = null; S.user = null; S.tabs = null; S.authGen++; closeDetail(true);
     showScreen('signin', 'サインアウトしました。');
   }
@@ -482,7 +627,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // ---- 起動と一覧 ----
   // 起動は list の1往復（計画 ar-app-perf §3-1 K1）。list の応答に利用者・既定値が入っている
   async function start() {
+    var g = S.authGen;
     showScreen('loading');
+    await untilNoForeground();          // 前の世代の書き込みの通信と、新しい一覧を並走させない（段D §9-10-1 の5）
+    if (g !== S.authGen) return;        // 待つ間にさらに世代が変わった: この起動は捨てる
     await loadList(perfScene('boot'));
   }
 
@@ -537,6 +685,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (S.listBusy && S.listGen === S.authGen) return;
     var boot = !!bootCtx;
     // 書き込みと一覧の取り直しは並走させない（段C §8-11-2 の7）。起動のときは書き込みが無い
+    if (!boot && movesPending()) { toast('移動の保存が終わってから、もう一度「更新」を押してください。', 'error'); return; }
     if (!boot && S.write) { toast('保存が終わってから、もう一度「更新」を押してください。', 'error'); return; }
     var g = S.authGen;
     var ctx = bootCtx || perfScene('list');
@@ -586,7 +735,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       if (S.screen === 'main') refreshViews(); else showScreen('main');   // 取り直しの後も共通の入口で描く（段C C2 N1）
       perfEnd(ctx, 'ok');
     } finally {
-      if (S.listGen === g) { S.listBusy = false; $('#refresh').disabled = !!S.write; checkReady(); }
+      if (S.listGen === g) { S.listBusy = false; $('#refresh').disabled = !!S.write || movesPending(); checkReady(); }
     }
   }
 
@@ -642,7 +791,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     $('#warnings').innerHTML = S.warnings.length ? '<div class="notice">' + S.warnings.map(esc).join('<br>') + '</div>' : '';
     document.querySelectorAll('[data-tab]').forEach(function (x) { x.setAttribute('aria-selected', String(x.dataset.tab === S.tab)); });
     $('#list').innerHTML = listHTML(data);
-    $('#refresh').disabled = S.listBusy || !!S.write;   // 保存中は一覧を取り直さない（段C §8-11-2 の7）
+    $('#refresh').disabled = S.listBusy || !!S.write || movesPending();   // 保存中・移動の保存待ちは一覧を取り直さない（段C §8-11-2 の7・段D §9-3 の9）
+    renderMoveBar();
     renderAttention();
   }
 
@@ -654,7 +804,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         var inList = !!findCard(it.id);
         var open = inList ? '<button type="button" class="button small ghost" data-open="' + esc(it.id) + '">詳細を開く</button>' : '<span class="muted">一覧にはありません（入金済みなど）</span>';
         // 書かれなかったと決まった希望は「この内容で開き直す」（自動では送らない）。未確定の間・書き込み中の請求では出さない（§8-13-1 の1）
-        var reopen = it.kind === 'lost' && it.wish && inList && !locked(it.id) && !(S.write && S.write.id === it.id)
+        var reopen = it.kind === 'lost' && it.wish && inList && !locked(it.id) && !(S.write && S.write.id === it.id) && !has(S.moves, it.id)
           ? '<button type="button" class="button small ghost" data-reopen-wish="' + esc(it.id) + '" data-idx="' + it.idx + '">この内容で開き直す</button>' : '';
         var act = it.kind === 'unsettled'
           ? '<button type="button" class="button small primary" data-settle-id="' + esc(it.id) + '">保存できたかを確かめる</button>'
@@ -674,21 +824,26 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   function dateOf(card, tab) { return tab === '未入金' ? card.dueDate : card.createdAt; }
 
   // 書き込み中の請求は、確定した状態に書き込み中の希望を重ねて見せる（段C §8-11-2 の6）。読み取りの応答は確定した状態にだけ当たる
-  function pendingWish(c) { return S.write && S.write.id === c.billingId && S.write.kind !== 'settle' ? S.write.wish : null; }
+  // 保存待ち（段D）の請求は、移す先を重ねて見せる（§9-3 の8）
+  function pendingWish(c) {
+    if (S.write && S.write.id === c.billingId && S.write.kind !== 'settle') return S.write.wish;
+    return has(S.moves, c.billingId) ? { status: S.moves[c.billingId].to } : null;
+  }
   function shownStatus(c) { var w = pendingWish(c); return w && w.status !== undefined ? w.status : c.status; }
   function shownMemo(c) { var w = pendingWish(c); return w && w.memo !== undefined ? w.memo : c.memo; }
 
   function cardHTML(c) {
     var unsettled = locked(c.billingId);
     var writing = !!(S.write && S.write.id === c.billingId);
+    var waiting = has(S.moves, c.billingId);
     var status = shownStatus(c);
     var drag = canDrag && !unsettled && !writing ? ' draggable="true"' : '';
     return '<button type="button" class="invoice-card' + (S.openId === c.billingId ? ' is-active' : '') + (unsettled || writing ? ' is-pending' : '') + '"' + drag +
       ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + (c.billingNumber ? ' 請求番号 ' + esc(c.billingNumber) : '') + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(status) +
-      (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (writing ? ' 保存中' : unsettled ? ' 未確定' : '') + (c.paidMark ? ' 入金済み' : '') + ' 詳細を開く">' +
+      (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (writing ? ' 保存中' : unsettled ? ' 未確定' : waiting ? ' 保存待ち' : '') + (c.paidMark ? ' 入金済み' : '') + ' 詳細を開く">' +
       '<span class="card-top"><span><span class="client">' + esc(c.partner) + '</span>' +
       (c.billingNumber ? '<span class="billing-no" title="請求番号">No.' + esc(c.billingNumber) + '</span>' : '') + '<span class="subject">' + esc(c.title) + '</span></span>' +
-      (writing ? '<span class="unsettled-mark">保存中</span>' : unsettled ? '<span class="unsettled-mark">未確定</span>' : '') +
+      (writing ? '<span class="unsettled-mark">保存中</span>' : unsettled ? '<span class="unsettled-mark">未確定</span>' : waiting ? '<span class="unsettled-mark">保存待ち</span>' : '') +
       (c.paidMark ? '<span class="unsettled-mark">入金済み</span>' : '') + '</span>' +
       // 担当の札は金額の下（メモ3行の左の空き）に置く。取引先名の右では長い名前に押されて切れた（ユーザー依頼 2026-09-30）
       '<span class="money-row"><span class="money-left"><span class="amount">' + V.yen(c.amount) + '</span>' +
@@ -722,7 +877,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (ctx) { readyWatch = { ctx: ctx, id: id }; checkReady(); }
     // 前の保存・移動が未確定なら、記録を読む代わりに確定を頼む（確定の答えに記録も入っている）
     if (has(S.unsettled, id)) {
-      S.notice = { kind: 'unknown', text: '前の操作が保存できたかを確かめています…' };
+      S.notice = { kind: 'unknown', text: '' };   // 確かめている間は保存させない。文言は出さない（段D §9-4）
       renderDetail();
       if (!(await runSettle(id))) {
         // 読み込みの途中などで始められなかった
@@ -795,10 +950,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var current = S.draftStatus !== null ? S.draftStatus : shownStatus(card);
     var memo = S.draftMemo !== null ? S.draftMemo : shownMemo(card);
     // 書き込み中・未確定の請求は操作させない（その請求だけ。段C §8-11-2 の2）。読み直し中・衝突・入金済みも、読み直すまで保存させない
-    var busy = writing || locked(S.openId) ||
+    var moveWait = has(S.moves, S.openId);
+    var busy = writing || moveWait || locked(S.openId) ||
       (S.notice && ((S.notice.kind === 'unknown' && S.notice.done !== 'ok') || S.notice.kind === 'conflict' || S.notice.kind === 'paid'));
     // 別の請求の保存中・一覧などの読み込み中は、書けるが保存ボタンだけ待たせる（段C §8-11-1・C2 R1。計測の readyMs と同じ条件）
-    var waitPrev = !busy && !canWrite();
+    var waitPrev = !busy && !canSaveNow();
     var choices = V.STATUSES.map(function (s) {
       return '<button type="button" class="choice" data-choice="' + s + '" aria-pressed="' + (current === s) + '"' + (busy ? ' disabled' : '') + '><span class="dot"></span>' + s + '</button>';
     }).join('');
@@ -813,7 +969,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<button class="button small ghost" type="button" data-close>✕ 閉じる</button></div>' +
       '<h2 id="detail-title">' + esc(card.partner) + '</h2><div class="subject">' + esc(card.title) + '</div>' +
       '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong><span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
-      '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(shownStatus(card)) + (writing ? '<span class="pill">保存中</span>' : '') + '</div></header>' +
+      '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(shownStatus(card)) + (writing ? '<span class="pill">保存中</span>' : moveWait ? '<span class="pill">保存待ち</span>' : '') + '</div></header>' +
       '<div class="detail-body">' + noticeHTML() + lostBoxHTML() +
       // 左に連絡状況とメモ、右に担当と記録。左右の先頭をそろえる（ユーザー依頼 2026-09-27）
       '<div class="detail-columns"><section><h3>連絡状況を選ぶ</h3><div class="status-choices" role="group" aria-label="連絡状況" style="margin-bottom:16px">' + choices + '</div>' +
@@ -822,7 +978,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<div class="limit" id="limit">' + memo.length + ' / 5,000文字</div></section>' +
       '<section>' + assigneeHTML(card, busy) + '<h3>記録（新しい順）</h3><div class="history">' + hist + '</div></section></div>' +
       '<div class="detail-actions"><button type="button" class="button teal" data-save' + (busy ? ' data-card-busy' : '') + (busy || waitPrev ? ' disabled' : '') + '>' +
-      (waitPrev ? waitLabel() : writing ? '保存しています…' : '変更をまとめて保存') + '</button>' +
+      (waitPrev ? waitLabel() : writing ? '保存しています…' : moveWait ? '移動の保存を待っています' : '変更をまとめて保存') + '</button>' +
+      // 移動の保存待ちがあれば、詳細を開いたまま送り出せる（止まった送り出しの再開も。書きかけを閉じずに済む。段D 実装レビュー第1巡 R1）
+      (hasMoves() ? '<button type="button" class="button small primary" data-move-now>移動を今すぐ保存（' + Object.keys(S.moves).length + '件' + (S.moveState === 'stopped' ? '・止まっています' : '') + '）</button>' : '') +
       '<span class="feedback" role="status">' + (S.notice && (S.notice.kind === 'saved' || S.notice.kind === 'info') ? esc(S.notice.text) : '') + '</span></div>' +
       '</div></article></div>';
     document.body.style.overflow = 'hidden';
@@ -852,6 +1010,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (el.hasAttribute('data-open')) return (inAtt ? '#attention ' : '') + (el.classList.contains('invoice-card') ? '.invoice-card' : 'button') + '[data-open="' + CSS.escape(el.dataset.open) + '"]';
     if (el.hasAttribute('data-close')) return '#detail [data-close]';
     if (el.hasAttribute('data-save')) return '#detail [data-save]';
+    if (el.hasAttribute('data-move-now')) return el.closest('#detail') ? '#detail [data-move-now]' : '#move-bar [data-move-now]';   // 段D 実装レビュー第2巡 R5
     return null;
   }
   function captureUI() {
@@ -885,6 +1044,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (el.hasAttribute('data-assignee')) return '#detail [data-assignee="' + CSS.escape(el.dataset.assignee) + '"]';
     if (el.hasAttribute('data-close')) return '#detail [data-close]';
     if (el.hasAttribute('data-save')) return '#detail [data-save]';
+    if (el.hasAttribute('data-move-now')) return el.closest('#detail') ? '#detail [data-move-now]' : '#move-bar [data-move-now]';   // 段D 実装レビュー第2巡 R5
     return null;
   }
 
@@ -910,7 +1070,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 
   function noticeHTML() {
     var n = S.notice;
-    if (!n || n.kind === 'saved' || n.kind === 'info') return '';
+    if (!n || n.kind === 'saved' || n.kind === 'info' || !n.text) return '';
     var btn = '';
     if (n.kind === 'conflict') btn = '<br><button type="button" class="button small ghost" data-reload-detail style="margin-top:10px">最新の内容を表示</button>';
     if (n.kind === 'paid') btn = '<br><button type="button" class="button small ghost" data-reload-list style="margin-top:10px">一覧を取り直す</button>';
@@ -946,8 +1106,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   function save() {
     var id = S.openId;
     var card = findCard(id);
-    if (!card || locked(id) || (S.write && S.write.id === id)) return;
-    if (!canWrite()) { refuseWrite('save'); return; }
+    if (!card || locked(id) || (S.write && S.write.id === id) || has(S.moves, id)) return;
+    if (!canSaveNow()) { refuseWrite('save'); return; }
     var da = S.features ? S.draftAssignee : null;
     var dropped = null;
     // 同じ取引先の担当が保存中・未確定なら、担当は黙って送らず・黙って外さず、本人に選ばせる（§8-11-2 の3）
@@ -1032,14 +1192,16 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // 未確定の操作の「確定」を頼む（§6-13）。サーバはロックの中で、その操作IDの記録があれば written、
   // 無ければ取り消しの印を付けて cancelled を返す。どちらでも、その後にその操作が書かれることは無い。
   // 答えを受け取れなければ未確定のまま残し、その請求を操作させない（要確認から、いつでも確かめ直せる）
+  // 返す値（段D の送り出しが続けるか止めるかを決める。§9-9-2）: written・cancelled・unknown（決まらない）・auth・discard（古い応答）・gone
   async function settleInner(id, ctx, op) {
     var u = S.unsettled[id];
-    if (!u) return;
-    var r = await api('detail', detailBody(id, { settleOpId: u.opId }), ctx ? { ctx: ctx } : null);
+    if (!u) return 'gone';
+    var mv = !!(op && op.kind === 'drag');   // 移動の送り出しの中の確定（詳細の readyMs はこの通信を待たない。§9-11）
+    var r = await api('detail', detailBody(id, { settleOpId: u.opId }), ctx ? { ctx: ctx, move: mv } : { move: mv });
     if (ctx) perfEnd(ctx, r.kind === 'ok' && r.json.settled ? r.json.settled : r.kind === 'ok' ? 'unknown' : V.perfResult(r));
-    if (op && !stillMine(op)) return;    // サインインが切れた後の古い応答は捨てる（未確定の控えは残っている）
-    if (handleAuthFailure(r)) return;
-    if (S.unsettled[id] !== u) return;   // 確定の間に別の経路で片付いていた
+    if (op && !stillMine(op)) return 'discard';   // サインインが切れた後の古い応答は捨てる（未確定の控えは残っている）
+    if (handleAuthFailure(r)) return 'auth';
+    if (S.unsettled[id] !== u) return 'gone';     // 確定の間に別の経路で片付いていた
     var card = findCard(id);
     var open = S.openId === id;
     if (r.kind !== 'ok' || !r.json.settled) {
@@ -1048,10 +1210,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         S.detail = { loading: false, records: S.detail ? S.detail.records : [] };
         S.notice = { kind: 'unknown', done: 'failed',
           text: '前の操作が保存できたかを、まだ確かめられていません（' + why + '）。「もう一度確かめる」を押してください。確かめるまで、この請求は保存も移動もできません。' };
-      } else {
+      } else if (!mv) {
         toast('「' + u.partner + '」の操作が保存できたかを確かめられませんでした（' + why + '）。画面上の「要確認」から確かめてください。', 'error');
       }
-      return;
+      return 'unknown';
     }
     var w = u.wish || { memo: u.lostMemo || undefined, assignee: u.assignee, status: u.kind === 'drag' ? u.to : undefined };
     delete S.unsettled[id];
@@ -1079,11 +1241,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         : { kind: 'unknown', done: 'ok',
           text: '保存されていませんでした。この操作は取り消したので、あとから書かれることはありません。最新の内容を表示しています。書いた内容は「要確認」に残しています。' };
     }
-    if (u.kind === 'drag' || !open) {
+    if ((u.kind === 'drag' || !open) && !mv) {
       toast(asgLost ? '「' + u.partner + '」の連絡状況・メモは保存できていましたが、担当は' + (asgRes === 'unknown' ? '保存できたかを確かめられませんでした' : '保存されませんでした') + '。「要確認」を見てください。'
         : written ? '「' + u.partner + '」の' + (u.kind === 'drag' ? ' ' + u.to + ' への移動' : '保存') + 'はできていました'
         : '「' + u.partner + '」の' + (u.kind === 'drag' ? '移動' : '保存') + 'はできていませんでした（取り消しました）。書いた内容は「要確認」に残しています。', written && !asgLost ? '' : 'error');
     }
+    return written ? 'written' : 'cancelled';
   }
 
   // 「最新の内容を表示」「読み直す」。書きかけのメモは知らせの中に残す（消さない）。読み直すまで保存させない
@@ -1092,12 +1255,13 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (!id || (S.write && S.write.id === id)) return;
     var gen = ++S.detailGen;
     S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
-    S.notice = { kind: 'unknown', text: '最新の内容を読み直しています…' };
+    S.notice = { kind: 'unknown', text: '' };   // 読み直す間は保存させない。文言は出さない（段D §9-4）
     renderDetail();
     var ok = await fetchDetail(id, gen);
     if (S.openId !== id || gen !== S.detailGen) return;
+    // 「最新の内容を表示しました」は出さない。書いた内容を控えに残している、ときだけ言う（段D §9-4）
     S.notice = ok
-      ? { kind: 'info', text: has(S.lost, id) ? '最新の内容を表示しました（あなたが書いた内容は「保存されなかった変更」に残しています）' : '最新の内容を表示しました' }
+      ? (has(S.lost, id) ? { kind: 'info', text: '最新の内容を表示しました（あなたが書いた内容は「保存されなかった変更」に残しています）' } : null)
       : { kind: 'unknown', done: 'failed', text: '最新の状態を読み直せませんでした。「もう一度読み直す」を押してください。読み直すまで保存はできません。' };
     refreshViews();
   }
@@ -1113,7 +1277,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   function reopenWish(id, idx) {
     var e = S.lost[id];
     var it = e && e.items[idx];
-    if (!it || !it.wish || !findCard(id) || locked(id) || (S.write && S.write.id === id)) return;
+    if (!it || !it.wish || !findCard(id) || locked(id) || (S.write && S.write.id === id) || has(S.moves, id)) return;
     if (S.openId) { closeDetail(false); if (S.openId) return; }
     openDetail(id);                      // 書きかけを空にして開く（ここまでは同期で進む）
     if (S.openId !== id) return;
@@ -1123,43 +1287,54 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     renderDetail();
   }
 
-  // ---- ドラッグ＆ドロップ（パソコンだけ。§3-5）。書き込みなので、保存と同じく1つだけ。画面は止めない（段C） ----
+  // ---- ドラッグ＆ドロップ（パソコンだけ。§3-5）。段D: すぐには送らず保存待ちに入れ、3秒ドラッグが途切れたら1件ずつ送る ----
+  // 断るのは、一覧の取り直し中・その請求が未確定・その請求が送信中のときだけ（§9-3 の2）。ほかの書き込みの最中でも受け付ける
   function moveByDrag(id, toStatus) {
     var card = findCard(id);
-    if (!card || card.status === toStatus || locked(id) || (S.write && S.write.id === id)) return;
-    if (!canWrite()) { refuseWrite('drag'); return; }
-    var body = { billingId: id, status: toStatus, baseRecordId: card.lastRecordId || 0, opId: newOpId() };
-    var op = newOp('drag', card, body);
+    if (!card || locked(id) || (S.write && S.write.id === id)) return;
+    if (S.listBusy) { refuseWrite('drag'); return; }
     var ctx = perfScene('drag');
-    runWrite(op, function () { return moveInner(op, body, ctx); }, 'drag');
-    ctx.readyMs = Math.round(performance.now() - ctx.t0);   // 落としてから、移した先を描き終わるまで（実測。定義の0ではない。C2 R1）
+    var res = V.moveAdd(S.moves, { id: id, to: toStatus, base: card.lastRecordId || 0, partner: card.partner, partnerId: card.partnerId || '',
+      billingNumber: card.billingNumber || '', owner: S.ownerKey, gen: S.authGen, seq: ++S.moveSeq, ctx: ctx }, card.status);
+    if (res === 'none') return;
+    restartMoveTimer();
+    refreshViews();
+    ctx.readyMs = Math.round(performance.now() - ctx.t0);   // 落としてから、移した先を描き終わるまで（実測）
   }
 
-  // 移した先は書き込み中の上書き（shownStatus）で見せ、確定した状態は応答でだけ変える（§8-11-2 の6）
+  // 移した先は書き込み中の上書き（shownStatus）で見せ、確定した状態は応答でだけ変える（§8-11-2 の6）。
+  // 段D: 1件ごとの知らせは出さず（まとめの知らせ）、結果を「続ける／止める／世代が変わった／捨てた」に分けて返す（§9-9-2・§9-10-2）
   async function moveInner(op, body, ctx) {
-    var r = await api('update', body, { ctx: ctx, keepalive: true });
-    perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs });
-    if (!stillMine(op)) return;
-    if (handleAuthFailure(r)) return;
+    var r = await api('update', body, { ctx: ctx, keepalive: true, move: true });
+    var o = V.moveOutcome(r);
+    // 計測の場面（落としてから結果が決まるまで。§9-11）は、確定の問い合わせが要るときは、その答えが出てから閉じる（段D 実装レビュー第1巡 R2）
+    if (o !== 'unknown') perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs });
+    if (!stillMine(op)) { if (o === 'unknown') perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs }); return { o: 'discard' }; }
+    if (handleAuthFailure(r)) return { o: 'auth' };
     var card = findCard(op.id);
     if (r.kind === 'ok') {
       if (card) applyState(card, r.json.state);
-      toast('「' + op.partner + '」を ' + body.status + ' へ移しました');
-      return;
+      S.moveTally.saved++;
+      return { o: 'continue' };
     }
-    if (r.kind !== 'fail') {
-      // 書けたかどうか分からない（G12 ④）。未確定にして確定を頼む。一覧の取り直しでは外さない
+    if (o === 'unknown') {
+      // 書けたかどうか分からない（G12 ④）。未確定にして確定を頼む。一覧の取り直しでは外さない。決まれば続け、決まらなければ止める
+      var first = V.failureText(r.kind, r.code);
       S.unsettled[op.id] = unsettledOf(op);
-      await settleInner(op.id, perfScene('settle'), op);
-      return;
+      var s = await settleInner(op.id, perfScene('settle'), op);
+      perfEnd(ctx, s === 'written' || s === 'cancelled' || s === 'unknown' ? s : V.perfResult(r), { readyMs: ctx.readyMs });
+      if (s === 'written') { S.moveTally.saved++; return { o: 'continue' }; }
+      if (s === 'cancelled') { S.moveTally.failed++; return { o: 'continue' }; }
+      if (s === 'unknown') { S.moveTally.unknown++; return { o: 'stop', why: first }; }
+      return { o: s === 'gone' ? 'continue' : s };
     }
     var why = V.failureText(r.kind, r.code);
     var paid = r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND';
     if (r.code === 'CONFLICT' && card && r.json.state) applyState(card, r.json.state);
     if (paid && card) card.paidMark = true;   // 一覧は自動では取り直さない（§8-13-1 の3）
     V.addWish(S.lost, op.id, op.partner, why + '。移していません', op.wish, opMeta(op));
-    toast('移せませんでした: ' + why + '。' + (r.code === 'CONFLICT' ? '最新の連絡状況で表示し直しました。' : '元のレーンのままです。') +
-      (paid ? '一覧を取り直すと消えます。' : ''), 'error');
+    S.moveTally.failed++;
+    return o === 'continue' ? { o: 'continue' } : { o: 'stop', why: why };
   }
 
   // ---- 小さな知らせ ----
@@ -1185,11 +1360,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     else if (b.hasAttribute('data-assignee')) { S.draftAssignee = b.dataset.assignee; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-save')) save();
     else if (b.hasAttribute('data-refresh')) loadList();
+    else if (b.hasAttribute('data-move-now')) kickMoves('now');   // 3秒を待たずに送り出す・止まった送り出しを続ける（段D §9-3 の4・6）
     else if (b.hasAttribute('data-reload-list')) loadList();   // 開いている請求が一覧から消えたら、書きかけを要確認へ移してから閉じる（loadList）
     else if (b.hasAttribute('data-reload-detail')) reloadDetail();
     else if (b.dataset.settleId) {
       var sid = b.dataset.settleId;
-      if (S.openId === sid) { S.notice = { kind: 'unknown', text: '前の操作が保存できたかを確かめています…' }; renderDetail(); }
+      if (S.openId === sid) { S.notice = { kind: 'unknown', text: '' }; renderDetail(); }   // 文言は出さない（段D §9-4）
       runSettle(sid);
     }
     else if (b.dataset.reopenWish) reopenWish(b.dataset.reopenWish, Number(b.dataset.idx));
@@ -1219,7 +1395,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   document.addEventListener('dragstart', function (e) {
     var c = e.target.closest && e.target.closest('.invoice-card[draggable=true]');
     if (!c) return;
-    if (!canWrite()) { e.preventDefault(); refuseWrite('drag'); return; }
+    // 段D: ほかの書き込みの最中でもドラッグを始められる。断るのは一覧の取り直し中だけ（送信中・未確定のカードは draggable が無い。§9-3 の2）
+    if (S.listBusy) { e.preventDefault(); refuseWrite('drag'); return; }
     e.dataTransfer.setData('text/plain', c.dataset.open);
     e.dataTransfer.effectAllowed = 'move';
     c.classList.add('dragging');
@@ -1244,9 +1421,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (id) moveByDrag(id, lane.dataset.lane);
   });
 
-  // 書き込みの途中・未確定が残っている間にページを離れようとしたら確かめる（書き込みの要求は keepalive で送り切る。段C §8-11-2 の8）
+  // 書き込みの途中・未確定・移動の保存待ちが残っている間にページを離れようとしたら確かめる
+  // （書き込みの要求は keepalive で送り切る。段C §8-11-2 の8。保存待ちの移動は送っていないので、閉じると消える。段D §9-2）
   window.addEventListener('beforeunload', function (e) {
-    if (S.write || Object.keys(S.unsettled).length) { e.preventDefault(); e.returnValue = ''; }
+    // 推奨は preventDefault。returnValue は古いブラウザ向けで、真の値を入れる（MDN の beforeunload。空の文字列では出ない版がある）
+    if (S.write || Object.keys(S.unsettled).length || hasMoves()) { e.preventDefault(); e.returnValue = true; }
   });
 
   // ---- 軽い計測（計画 ar-app-perf §3-3 L）----

@@ -378,6 +378,50 @@
     });
   }
 
+  // ---- 段D: ドラッグの保存待ち（計画 ar-app-perf §9-3・§9-9・§9-10） ----
+  // 保存待ち: 請求ID → { id, to（移す先）, base（受け付けたときの確定した記録ID）, partner, partnerId, billingNumber, owner, gen, seq, ctx }。
+  // 同じ請求をまた動かしたら移す先だけを変え、確定した状態（confirmed）へ戻したら外す。base は最初のドラッグのときのまま（§9-3 の3）。
+  // 返す値: added（新しく入れた）・changed（移す先を変えた）・removed（元へ戻したので外した）・none（何もしない）
+  function moveAdd(moves, entry, confirmed) {
+    var cur = Object.prototype.hasOwnProperty.call(moves, entry.id) ? moves[entry.id] : null;
+    if (!cur) {
+      if (entry.to === confirmed) return 'none';
+      moves[entry.id] = entry;
+      return 'added';
+    }
+    if (entry.to === cur.to) return 'none';
+    if (entry.to === confirmed) { delete moves[entry.id]; return 'removed'; }
+    cur.to = entry.to;
+    if (entry.ctx) cur.ctx = entry.ctx;   // 計測は最後に落とした時点から
+    return 'changed';
+  }
+  // 受け付けた順の先頭を、保存待ちから外して返す（送る直前に同期の処理の中で。§9-9-2）
+  function moveTake(moves) {
+    var first = null;
+    Object.keys(moves).forEach(function (k) { if (!first || moves[k].seq < first.seq) first = moves[k]; });
+    if (first) delete moves[first.id];
+    return first;
+  }
+  // 移動の1件の結果から、送り出しを続けるか止めるかを決める（§9-9-2 の表・§9-10-2）。
+  // 続けてよいのは、その請求だけの失敗と分かっている既知のコードだけ。BAD_REQUEST・知らないコード・サーバの問題は止める
+  var MOVE_CONTINUE_CODES = ['CONFLICT', 'PAID_OR_OUT_OF_SCOPE', 'NOT_FOUND', 'PARTNER_UNKNOWN', 'PARTNER_CHANGED', 'CANCELLED'];
+  function moveOutcome(r) {
+    if (!r) return 'stop';
+    if (r.kind === 'ok') return 'continue';
+    if (r.kind !== 'fail') return 'unknown';   // 打ち切り・壊れた応答・通信の失敗: 確定の問い合わせで決める
+    if (r.code === 'UNAUTHENTICATED' || r.code === 'FORBIDDEN') return 'auth';
+    return MOVE_CONTINUE_CODES.indexOf(r.code) >= 0 ? 'continue' : 'stop';
+  }
+  // 送り出しが終わったときの、まとめの知らせ（§9-3 の10）
+  // saved: 保存できた（確定で書けていたを含む）・failed: 書かれなかったと決まった・unknown: 確定でも決まらなかった（未確定）
+  function moveSummary(saved, failed, unknown) {
+    unknown = unknown || 0;
+    if (!saved && !failed && !unknown) return null;
+    if (!failed && !unknown) return { text: '✓ ' + saved + '件の移動を保存しました', kind: '' };
+    return { text: (saved ? saved + '件の移動を保存しました。' : '') + (failed ? failed + '件の移動は保存できませんでした。' : '') +
+      (unknown ? unknown + '件の移動は保存できたかを確かめられませんでした。' : '') + '「要確認」を見てください。', kind: 'error' };
+  }
+
   // 書き込みの要求の fetch の指定（§8-11-2 の8・§8-14-2 の I3）。keepalive はページを閉じても送り切る指定。
   // 本文の上限（64 KiB、MDN の RequestInit）を超えないよう、送る本文（符号化の後）が 60,000 バイトを超えたら付けない
   var KEEPALIVE_MAX_BYTES = 60000;
@@ -499,7 +543,7 @@
     failureText: failureText, buildUpdate: buildUpdate, attentionItems: attentionItems, tokenSub: tokenSub, addIntent: addIntent, stashDraft: stashDraft,
     addLost: addLost, removeLostMemo: removeLostMemo, dismissLost: dismissLost,
     wishOf: wishOf, draftWish: draftWish, wishEmpty: wishEmpty, wishLines: wishLines, addWish: addWish,
-    partnerAssigneeLocked: partnerAssigneeLocked, fetchInit: fetchInit, KEEPALIVE_MAX_BYTES: KEEPALIVE_MAX_BYTES,
+    partnerAssigneeLocked: partnerAssigneeLocked, moveAdd: moveAdd, moveTake: moveTake, moveOutcome: moveOutcome, moveSummary: moveSummary, fetchInit: fetchInit, KEEPALIVE_MAX_BYTES: KEEPALIVE_MAX_BYTES,
     mergeRecords: mergeRecords, newerState: newerState, perfResult: perfResult, perfServerFields: perfServerFields,
     perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX
   };
