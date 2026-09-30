@@ -312,11 +312,88 @@
     return addIntent(lost, id, partner, why + '（' + parts.join('・') + '）。サインインし直してから、もう一度操作してください');
   }
 
-  // 保存できた内容と同じ控えだけを外す
+  // ---- 段C（案B+）: 操作の希望の全項目（計画 ar-app-perf §8-13-1 の1・§8-14-1 の P1） ----
+  // 希望 = 変えようとした項目だけを持つ { status?, memo?（空にする変更を含む）, assignee? }
+
+  // 保存・移動で送る変更（buildUpdate の形）から、希望を写す
+  function wishOf(body) {
+    var w = {};
+    if (!body) return w;
+    if (body.status !== undefined) w.status = body.status;
+    if (body.memo !== undefined) w.memo = body.memo;
+    if (body.assignee !== undefined) w.assignee = body.assignee;
+    return w;
+  }
+
+  // 詳細の書きかけ（今のカードと違う項目だけ）を希望にする。一覧から消えた・サインインが切れたときの回収に使う
+  function draftWish(card, draftStatus, draftMemo, draftAssignee) {
+    var w = {};
+    if (!card) return w;
+    if (draftStatus !== null && draftStatus !== undefined && draftStatus !== card.status) w.status = draftStatus;
+    if (draftMemo !== null && draftMemo !== undefined && draftMemo !== card.memo) w.memo = draftMemo;
+    if (draftAssignee !== null && draftAssignee !== undefined && draftAssignee !== (card.assignee || '')) w.assignee = draftAssignee;
+    return w;
+  }
+
+  function wishEmpty(w) { return !w || (w.status === undefined && w.memo === undefined && w.assignee === undefined); }
+
+  // 希望を項目ごとの文言にする（要確認に出す）
+  function wishLines(w, staff) {
+    var out = [];
+    if (!w) return out;
+    if (w.status !== undefined) out.push('連絡状況 → ' + w.status);
+    if (w.memo !== undefined) out.push(w.memo === '' ? 'メモ → （空にする）' : 'メモ → 書き換え（下の「書いたメモを見る」）');
+    if (w.assignee !== undefined) out.push('担当 → ' + assigneeLabel(staff, w.assignee));
+    return out;
+  }
+
+  // 書かれなかったと決まった操作の希望を、要確認の1件として残す（全項目）。
+  // meta.key は回収の識別子: 操作なら操作ID、送っていない書きかけなら 'draft:' で始まる使い捨ての ID（段C C2 R3）。
+  // 同じ識別子・同じ理由の控えがあれば足さない（同じ操作の二重登録を防ぐ。§8-14-2 の I2）。識別子が違えば、内容が同じでも別の1件。
+  // 識別子が無い呼び方（古い形）は、同じ理由・同じ希望で重ねない。meta.billingNumber は要確認に出す請求番号
+  function addWish(lost, id, partner, text, w, meta) {
+    if (wishEmpty(w)) return lost;
+    meta = meta || {};
+    var copy = {};
+    ['status', 'memo', 'assignee'].forEach(function (k) { if (w[k] !== undefined) copy[k] = w[k]; });
+    var e = lost[id] || (lost[id] = { partner: partner || '', items: [] });
+    var t = text || '';
+    var dup = meta.key
+      ? e.items.some(function (x) { return x.key === meta.key && x.text === t; })
+      : e.items.some(function (x) { return x.wish && !x.key && x.text === t && JSON.stringify(x.wish) === JSON.stringify(copy); });
+    if (!dup) {
+      e.items.push({ text: t, memo: typeof copy.memo === 'string' ? copy.memo : null, wish: copy,
+        key: meta.key || null, billingNumber: meta.billingNumber || '' });
+    }
+    return lost;
+  }
+
+  // 担当を変える書き込みが、同じ取引先で送信中・未確定のまま残っているか（§8-11-2 の3・§8-13-2 の1）
+  function partnerAssigneeLocked(write, unsettled, partnerId) {
+    if (!partnerId) return false;
+    if (write && write.partnerId === partnerId && write.wish && write.wish.assignee !== undefined) return true;
+    return Object.keys(unsettled || {}).some(function (k) {
+      var u = unsettled[k];
+      return u && u.partnerId === partnerId && u.assignee !== undefined;
+    });
+  }
+
+  // 書き込みの要求の fetch の指定（§8-11-2 の8・§8-14-2 の I3）。keepalive はページを閉じても送り切る指定。
+  // 本文の上限（64 KiB、MDN の RequestInit）を超えないよう、送る本文（符号化の後）が 60,000 バイトを超えたら付けない
+  var KEEPALIVE_MAX_BYTES = 60000;
+  function fetchInit(payload, keepalive) {
+    var body = new URLSearchParams({ payload: JSON.stringify(payload) });
+    var bytes = body.toString().length;   // URLSearchParams の文字列は ASCII だけ（1文字＝1バイト）
+    var init = { method: 'POST', body: body };
+    if (keepalive && bytes <= KEEPALIVE_MAX_BYTES) init.keepalive = true;
+    return { init: init, bytes: bytes };
+  }
+
+  // 保存できた内容と同じ控えだけを外す（メモだけの古い控えに限る。希望の全項目の控えは、本人が「消す」まで残す）
   function removeLostMemo(lost, id, memo) {
     var e = lost[id];
     if (!e) return lost;
-    e.items = e.items.filter(function (x) { return x.memo !== memo; });
+    e.items = e.items.filter(function (x) { return x.wish || x.memo !== memo; });
     if (!e.items.length) delete lost[id];
     return lost;
   }
@@ -336,13 +413,13 @@
     var out = [];
     Object.keys(unsettled || {}).forEach(function (id) {
       var u = unsettled[id];
-      out.push({ id: id, kind: 'unsettled', partner: u.partner || '', memo: u.lostMemo === undefined ? null : u.lostMemo,
+      out.push({ id: id, kind: 'unsettled', partner: u.partner || '', billingNumber: u.billingNumber || '', key: u.opId || null, memo: u.lostMemo === undefined ? null : u.lostMemo, wish: u.wish || null,
         text: (u.kind === 'drag' ? '移動' : '保存') + 'できたかを、まだ確かめられていません' });
     });
     Object.keys(lost || {}).forEach(function (id) {
       var l = lost[id];
       (l.items || []).forEach(function (it, idx) {
-        out.push({ id: id, idx: idx, kind: 'lost', partner: l.partner || '', memo: it.memo, text: it.text || '' });
+        out.push({ id: id, idx: idx, kind: 'lost', partner: l.partner || '', billingNumber: it.billingNumber || '', key: it.key || null, memo: it.memo, wish: it.wish || null, text: it.text || '' });
       });
     });
     return out;
@@ -421,6 +498,8 @@
     assigneeLines: assigneeLines, detailLines: detailLines,
     failureText: failureText, buildUpdate: buildUpdate, attentionItems: attentionItems, tokenSub: tokenSub, addIntent: addIntent, stashDraft: stashDraft,
     addLost: addLost, removeLostMemo: removeLostMemo, dismissLost: dismissLost,
+    wishOf: wishOf, draftWish: draftWish, wishEmpty: wishEmpty, wishLines: wishLines, addWish: addWish,
+    partnerAssigneeLocked: partnerAssigneeLocked, fetchInit: fetchInit, KEEPALIVE_MAX_BYTES: KEEPALIVE_MAX_BYTES,
     mergeRecords: mergeRecords, newerState: newerState, perfResult: perfResult, perfServerFields: perfServerFields,
     perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX
   };

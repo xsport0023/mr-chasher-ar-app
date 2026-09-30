@@ -65,7 +65,6 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .invoice-card.is-active{outline:4px solid #6556ed;outline-offset:3px}
 .invoice-card.is-pending{opacity:.55}
 .attention{border:3px solid #1d1830;border-radius:20px;background:#fff4cc;box-shadow:4px 5px 0 #1d1830;padding:14px 16px;margin:0 0 20px}.attention h3{margin:0 0 8px;font-size:15px}.attention-item{border-top:1px dashed #cfc6d9;padding:10px 0;font-size:13px;line-height:1.6}.attention-item:first-of-type{border-top:0}.attention-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px}.attention textarea{width:100%;min-height:70px;margin-top:5px;border:2px dashed #1d1830;border-radius:10px;padding:8px;background:#fff}.muted{font-size:11px;color:#6a6278}
-.busy{position:fixed;inset:0;z-index:50;background:#1c183980;display:grid;place-items:center;padding:16px}.busy-box{background:#fff;border:3px solid #1d1830;border-radius:20px;box-shadow:5px 6px 0 #1d1830;padding:20px 24px;max-width:420px;text-align:center;line-height:1.7}.busy-box small{display:block;color:#5c556b;margin-top:6px}
 .unsettled-mark{font-size:11px;border:2px solid #1d1830;background:#ffecb4;border-radius:99px;padding:3px 7px;font-weight:900;white-space:nowrap}
 .invoice-card[draggable=true]{cursor:grab}
 .invoice-card.dragging{opacity:.4}
@@ -193,7 +192,6 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 </div>
 
 <div id="detail"></div>
-<div id="busy" class="busy" role="alertdialog" aria-modal="true" aria-labelledby="busy-text" tabindex="-1" hidden><div class="busy-box"><span class="spinner" aria-hidden="true">◌</span> <strong id="busy-text"></strong><small>終わるまで、ほかの操作はできません（長くても30秒ほど）。</small></div></div>
 <div id="slow" class="banner warn" role="status" hidden>応答を待っています…（最大15秒）</div>
 <div id="toast" class="banner toast" role="status" hidden></div>
 
@@ -208,9 +206,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   var has = function (o, k) { return Object.prototype.hasOwnProperty.call(o, k); };
 
   // ---- 状態 ----
-  // ★ 書き込み（保存・移動・確定）は同時に1つだけ。書き込みの間は画面全体を止める（S.busy）。
-  //   書き込みは、ほかの通信が1本も走っていないときにだけ始める（exclusive）。
-  //   これで、書き込みと並んで走る通信の組み合わせを無くす（計画 §6-15、案B。W5 第1〜3巡の指摘の根）
+  // ★ 書き込み（保存・移動・確定）は同時に1つだけ（S.write）。書き込みは、ほかの通信（背景の読み取りを除く）が
+  //   1本も走っていないときにだけ始める（runWrite）。フェーズ1 の案B（計画 §6-15）の「同時に1つ」は保つ。
+  //   段C 案B+（計画 ar-app-perf §8-11・§8-13・§8-14）で「その間は画面全体を止める」をやめた。止めるのは、
+  //   書き込み中の請求・次の書き込み・一覧の取り直し・サインアウトだけ。応答は、その操作の請求と控えにだけ当てる
   var S = {
     token: null, user: null,
     screen: 'signin',     // signin / config / loading / error / denied / main
@@ -225,9 +224,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     features: null,       // サーバが担当に対応しているか（{ assignee: 1 }）。無ければ担当の表示・操作を出さない（第1巡 指摘2）
     staffSel: '全社',     // 右上の「担当」の選択（全社／営業のメール／未割り当て）
     notice: null,         // { kind: saved|info|conflict|paid|unknown|error, text, done }。★ 保存されなかったメモは知らせに持たせない（下の lost・unsettled が正本。W5 第4巡 指摘2）
-    busy: null,           // 書き込み中: { text }。この間は画面全体を止める
-    closeAfterSave: null, // 保存できたときに、書き込みが終わってから詳細を閉じる印: { id, text }（ユーザー依頼 2026-09-26）
-    unsettled: {},        // 応答が分からなかった保存・移動: 請求ID → { opId, kind: save|drag, lostMemo, partner, to }。確定するまでその請求を操作させない
+    // 書き込み中の1件: { opId, id（請求ID）, partnerId, partner, kind: save|drag|settle, wish（希望の全項目）, gen（サインインの世代）, owner }。
+    // 応答・後始末は、S.write がその操作のままで、世代が一致するときだけ当てる（§8-13-1 の2・§8-14-2 の I1）
+    write: null,
+    composing: false, refreshPending: false,   // 入力の変換中は描き直しを待つ（段C C2 R2）
+    unsettled: {},        // 応答が分からなかった保存・移動: 請求ID → { opId, kind: save|drag, lostMemo, partner, partnerId, assignee, to, wish }。確定するまでその請求を操作させない
     lost: {},             // 保存されなかったメモの控え: 請求ID → { partner, items: [{ text, memo }] }。請求ごとに複数件（続けて失敗しても上書きしない）。
                           // 1件ずつ「消す」か、同じ内容の保存が成功するまで残す。一覧から消えても「要確認」から取り出せる（ar-view.js の addLost など）
     inflight: 0,
@@ -260,13 +261,16 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   var slowTimer = null;
   function beginWait() {
     S.inflight++;
+    syncSaveButton();
     if (!slowTimer) slowTimer = setTimeout(function () { $('#slow').hidden = false; }, C.SLOW_NOTICE_MS);
   }
   function endWait() {
     S.inflight = Math.max(0, S.inflight - 1);
     if (!S.inflight) { clearTimeout(slowTimer); slowTimer = null; $('#slow').hidden = true; }
+    checkReady();
   }
-  // opts: ctx（計測の場面。あれば要求ID を付けて行を残す）・retry（取り直しの番号）・bg（背景の読み取り。K2）
+  // opts: ctx（計測の場面。あれば要求ID を付けて行を残す）・retry（取り直しの番号）・bg（背景の読み取り。K2）・
+  //       keepalive（書き込み。ページを閉じても送り切る指定。段C §8-11-2 の8）
   async function api(action, extra, opts) {
     opts = opts || {};
     var rid = opts.ctx ? newOpId() : '';
@@ -274,23 +278,25 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (rid) payload.rid = rid;
     var t0 = performance.now();
     var r = null;
+    if (opts.bg) S.bgInflight++;       // 背景の読み取りを、一瞬でも前景として数えない（保存ボタンの待ちの表示。段C C2 R1）
     beginWait();
-    if (opts.bg) S.bgInflight++;
     try {
-      r = await send(payload);
+      r = await send(payload, !!opts.keepalive);
       return r;
     } finally {
-      endWait();
       if (opts.bg) S.bgInflight = Math.max(0, S.bgInflight - 1);
+      endWait();
       if (opts.ctx) perfReq(opts.ctx, action, opts.retry || 0, rid, t0, r);
     }
   }
-  async function send(payload) {
+  async function send(payload, keepalive) {
     if (MOCK) return V.classifyResponse(await window.AR_MOCK_API(payload));
     var ctrl = new AbortController();
     var timer = setTimeout(function () { ctrl.abort(); }, C.TIMEOUT_MS);
     try {
-      var res = await fetch(C.GAS_URL, { method: 'POST', body: new URLSearchParams({ payload: JSON.stringify(payload) }), signal: ctrl.signal });
+      var f = V.fetchInit(payload, keepalive);   // 本物の送信の組み立て（node の試験と同じ関数。§8-14-2 の I3）
+      f.init.signal = ctrl.signal;
+      var res = await fetch(C.GAS_URL, f.init);
       return V.classifyResponse({ text: await res.text() });
     } catch (e) {
       return V.classifyResponse(e && e.name === 'AbortError' ? { aborted: true } : { networkError: true });
@@ -301,40 +307,93 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // 書き込みを妨げる通信の数（背景の読み取りを除く）
   function fgInflight() { return S.inflight - S.bgInflight; }
 
-  // 書き込みを1つだけ走らせる。ほかの通信（背景の読み取りを除く）が走っていれば始めない。走っている間は画面全体を止める。
-  // kind は断ったときの計測の種類（save・drag・detail）
-  async function exclusive(text, fn, kind) {
-    if (S.busy || fgInflight() > 0 || S.listBusy) {
-      toast('読み込みの途中です。終わってから、もう一度操作してください。', 'error');
-      perfRejected(kind || 'save');
-      return false;
+  // 書き込みを始めてよいか。書き込み中・ほかの通信（背景の読み取りを除く）・一覧の取り直しの間は始めない。
+  // サインインが切れた後も、前の書き込みの要求が戻るまでは始めない（fgInflight。同時に走る書き込みは常に1本以下）
+  function canWrite() { return !S.write && fgInflight() === 0 && !S.listBusy; }
+  // 詳細の「保存ボタンが押せるまで」を追う（段C C2 R1）。押せる＝書き込みを始めてよく、その請求が書き込み中・未確定でない。
+  // 押せるようになる前に閉じた詳細は、readyMs を持たない行として残す（押せるまでに至らなかった標本。集計で別に数える。計画 §8-16）
+  var readyWatch = null;   // { ctx, id }
+  function waitLabel() { return S.write ? '前の保存を待っています' : '読み込みを待っています'; }
+  // 保存ボタンの「待っています」を、描き直さずに今の状態へ合わせる（一覧の読み込み・通信の終わりで。段C C2 R1）
+  function syncSaveButton() {
+    var b = document.querySelector('#detail [data-save]');
+    if (!b || b.hasAttribute('data-card-busy')) return;
+    var wait = !canWrite();
+    b.disabled = wait;
+    b.textContent = wait ? waitLabel() : '変更をまとめて保存';
+  }
+  function checkReady() {
+    syncSaveButton();
+    var w = readyWatch;
+    if (!w) return;
+    if (S.openId !== w.id) { readyWatch = null; flushDetailPerf(w.ctx); return; }
+    if (canWrite() && !locked(w.id) && !(S.write && S.write.id === w.id)) {
+      w.ctx.readyMs = Math.round(performance.now() - w.ctx.t0);
+      readyWatch = null;
+      flushDetailPerf(w.ctx);
     }
-    S.busy = { text: text };
-    if (S.openId) renderDetail();      // メモ欄・連絡状況・保存を先に押せない状態にしてから覆う
-    renderBusy();
+  }
+  function flushDetailPerf(ctx) {
+    if (ctx.pendingResult === undefined) return;   // 詳細の応答がまだ（応答のときにもう一度呼ばれる）
+    var res = ctx.pendingResult;
+    ctx.pendingResult = undefined;
+    perfEnd(ctx, res, ctx.readyMs !== undefined ? { readyMs: ctx.readyMs } : {});
+  }
+  function refuseWrite(kind) {
+    toast(S.write ? '前の保存が終わってから、もう一度操作してください。' : '読み込みの途中です。終わってから、もう一度操作してください。', 'error');
+    perfRejected(kind || 'save');
+  }
+  // 書き込みを1つだけ走らせる（段C: 画面は止めない）。kind は断ったときの計測の種類（save・drag・detail）。
+  // 後始末（S.write を外す・描き直す）は、S.write がまだこの操作のときだけ（§8-14-2 の I1。切れた後の古い処理が新しい書き込みを外さない）
+  async function runWrite(op, fn, kind) {
+    if (!canWrite()) { refuseWrite(kind); return false; }
+    S.write = op;
+    refreshViews();
     try {
       await fn();
     } finally {
-      S.busy = null;
-      renderBusy();
-      if (S.screen === 'main') renderMain();
-      if (S.openId) renderDetail();
+      if (S.write === op) { S.write = null; refreshViews(); }
     }
     return true;
   }
-  // 書き込みの間は、背後（一覧・詳細）を inert にして、Tab・文字入力・クリックを実際に届かなくする（W5 第4巡 指摘1）。
-  // 覆い（#busy）は背後の外に置いてあるので inert にならない
-  function renderBusy() {
-    var on = !!S.busy;
-    ['.app', '#detail'].forEach(function (sel) { var el = $(sel); if (on) el.setAttribute('inert', ''); else el.removeAttribute('inert'); });
-    $('#busy').hidden = !on;
-    $('#busy-text').textContent = on ? S.busy.text : '';
-    if (on) $('#busy').focus();
+  // 描き直す。入力の変換中（IME）は待ち、変換が終わってから描き直す。描き直しの前後で、フォーカス・選択・開閉・詳細の位置を保つ（段C C2 R2）
+  function refreshViews() {
+    if (S.composing) { S.refreshPending = true; checkReady(); return; }   // 描き直しは待つが、保存ボタンと計測は合わせる
+    var ui = captureUI();
+    if (S.screen === 'main') renderMain();
+    if (S.openId) renderDetail();
+    restoreUI(ui);
+    checkReady();
   }
+  // 操作（保存・移動）を受け付けたときに、希望の全項目と持ち主を写して持つ（§8-13-1 の1）
+  function newOp(kind, card, body) {
+    return { opId: body.opId, id: card.billingId, partnerId: card.partnerId || '', partner: card.partner, billingNumber: card.billingNumber || '', kind: kind,
+      wish: V.wishOf(body), gen: S.authGen, owner: S.ownerKey };
+  }
+  // 回収の識別子は操作ID、要確認には請求番号も出す（段C C2 R3）
+  function opMeta(o) { return { key: o.opId, billingNumber: o.billingNumber || '' }; }
+  // 応答が分からない操作を、未確定の控えの形にする（希望の全項目を持たせる）
+  function unsettledOf(op) {
+    var w = op.wish || {};
+    return { opId: op.opId, kind: op.kind === 'drag' ? 'drag' : 'save', partner: op.partner, partnerId: op.partnerId, billingNumber: op.billingNumber || '',
+      lostMemo: typeof w.memo === 'string' && w.memo !== '' ? w.memo : null, assignee: w.assignee, to: w.status, wish: w };
+  }
+  // サインインが切れた・拒否された瞬間に、書き込み中の1件を持ち主の未確定にする。その操作の遅れて届いた応答は捨てる（§8-13-1 の2）
+  function parkWrite() {
+    var w = S.write;
+    if (!w) return;
+    S.write = null;
+    if (w.kind === 'settle') return;   // 確定の問い合わせなら、未確定の控えはもうある
+    var box = w.owner === S.ownerKey ? S.unsettled : (S.stashes[w.owner] || (S.stashes[w.owner] = { lost: {}, unsettled: {} })).unsettled;
+    if (!has(box, w.id)) box[w.id] = unsettledOf(w);
+  }
+  // 応答を当ててよいか: 今の書き込みがこの操作のままで、サインインの世代が同じとき
+  function stillMine(op) { return S.write === op && op.gen === S.authGen; }
 
   // どの操作でも共通: サインイン切れ・許可なし は画面ごと切り替える。切り替えたら true
   function handleAuthFailure(r) {
     if (r.kind !== 'fail') return false;
+    if (r.code === 'UNAUTHENTICATED' || r.code === 'FORBIDDEN') parkWrite();   // 画面を切り替える前に（§8-13-1 の2）
     if (r.code === 'UNAUTHENTICATED') {
       S.token = null;
       S.authGen++;
@@ -365,16 +424,14 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }
 
   // 拒否・サインイン切れのときに、前に読み込んでいた請求の内容を画面から消す（W6 で見つかった不具合。計画 §6-20）。
-  // 詳細は書き込みの途中（S.busy）でも閉じる。保存されなかったメモの控え（S.lost）と未確定の操作（S.unsettled）は
-  // 本人のものなので消さない（サインインし直せば要確認に戻る）。
-  // 詳細の書きかけ（送った保存を含む）は、消す前にその人の控えへ移す。連絡状況だけ・メモを消すだけの変更も、
-  // 説明だけの控えとして残す（W6 後の確認 第1巡 指摘1・第2巡 指摘1）
+  // 保存されなかったメモの控え（S.lost）と未確定の操作（S.unsettled）は本人のものなので消さない（サインインし直せば要確認に戻る）。
+  // 詳細の書きかけは、消す前に希望の全項目（連絡状況・メモを空にする変更・担当）としてその人の控えへ移す（段C §8-13-1 の3）
   function clearShownData() {
     var id = S.openId;
     var card = id ? findCard(id) : null;
-    if (card && !locked(id)) V.stashDraft(S.lost, id, card.partner, card, S.draftStatus, S.draftMemo);
-    if (card && !locked(id) && S.features && S.draftAssignee !== null && S.draftAssignee !== (card.assignee || '')) {
-      V.addIntent(S.lost, id, card.partner, 'サインインが切れた・許可されなかったため、担当「' + V.assigneeLabel(S.staff, S.draftAssignee) + '」は保存していません。サインインし直してから、もう一度操作してください');
+    if (card && !locked(id)) {
+      V.addWish(S.lost, id, card.partner, 'サインインが切れた・許可されなかったため保存していません。サインインし直してから、もう一度操作してください',
+        V.draftWish(card, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null), { key: 'draft:' + newOpId(), billingNumber: card.billingNumber });
     }
     S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.detailGen++;
@@ -415,6 +472,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     })();
   }
   function signOut() {
+    if (S.write) { toast('保存が終わってから、サインアウトしてください。', 'error'); return; }
+    if (S.openId) { closeDetail(false); if (S.openId) return; }   // 書きかけがあれば閉じてよいか確かめる
     if (!MOCK && window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     S.token = null; S.user = null; S.tabs = null; S.authGen++; closeDetail(true);
     showScreen('signin', 'サインアウトしました。');
@@ -476,11 +535,14 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // bootCtx があれば起動（K1）: 応答の利用者・既定値を先に入れる。古いサーバ（list に利用者が無い）なら bootstrap で補う（計画 §5-4）
   async function loadList(bootCtx) {
     if (S.listBusy && S.listGen === S.authGen) return;
-    var g = S.authGen;
     var boot = !!bootCtx;
+    // 書き込みと一覧の取り直しは並走させない（段C §8-11-2 の7）。起動のときは書き込みが無い
+    if (!boot && S.write) { toast('保存が終わってから、もう一度「更新」を押してください。', 'error'); return; }
+    var g = S.authGen;
     var ctx = bootCtx || perfScene('list');
     S.listBusy = true; S.listGen = g;
     $('#refresh').disabled = true;
+    syncSaveButton();
     if (!S.tabs) showScreen('loading');
     try {
       var r = await api('list', null, { ctx: ctx });
@@ -506,19 +568,25 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         perfEnd(ctx, V.perfResult(r));
         return;
       }
+      // 置き換える前の、開いている請求と書きかけ（一覧から消えたときの回収に使う。§8-14-2 の I2）
+      var openId = S.openId;
+      var openCard = openId ? findCard(openId) : null;
+      var openWish = openCard && !locked(openId) ? V.draftWish(openCard, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null) : null;
       S.tabs = r.json.tabs;
       S.fetchedAt = r.json.fetchedAt;
       S.warnings = r.json.warnings || [];
       if (!boot && r.json.user) applyStaff(r.json, false);   // 取り直しでも担当の対応を見直す（サーバを戻したとき、担当を出さない）
       // ★ 未確定（unsettled）・保存されなかったメモ（lost）は取り直しでは外さない。一覧から消えても「要確認」に残る
-      if (S.openId && !findCard(S.openId)) {
+      if (openId && S.openId === openId && !findCard(openId)) {
+        // 書きかけは、希望の全項目として要確認へ移してから閉じる（段C §8-13-1 の3）
+        if (openWish && !V.wishEmpty(openWish)) V.addWish(S.lost, openId, openCard.partner, '一覧を取り直したら、この請求は一覧から消えていました（入金済みなど）。保存していません', openWish, { key: 'draft:' + newOpId(), billingNumber: openCard.billingNumber });
         closeDetail(true);
-        toast('開いていた請求は入金済みになり、一覧から消えました。');
+        toast('開いていた請求は入金済みになり、一覧から消えました。' + (openWish && !V.wishEmpty(openWish) ? '書きかけは「要確認」に残しています。' : ''));
       }
-      showScreen('main');
+      if (S.screen === 'main') refreshViews(); else showScreen('main');   // 取り直しの後も共通の入口で描く（段C C2 N1）
       perfEnd(ctx, 'ok');
     } finally {
-      if (S.listGen === g) { S.listBusy = false; $('#refresh').disabled = false; }
+      if (S.listGen === g) { S.listBusy = false; $('#refresh').disabled = !!S.write; checkReady(); }
     }
   }
 
@@ -574,6 +642,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     $('#warnings').innerHTML = S.warnings.length ? '<div class="notice">' + S.warnings.map(esc).join('<br>') + '</div>' : '';
     document.querySelectorAll('[data-tab]').forEach(function (x) { x.setAttribute('aria-selected', String(x.dataset.tab === S.tab)); });
     $('#list').innerHTML = listHTML(data);
+    $('#refresh').disabled = S.listBusy || !!S.write;   // 保存中は一覧を取り直さない（段C §8-11-2 の7）
     renderAttention();
   }
 
@@ -582,13 +651,20 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var items = V.attentionItems(S.unsettled, S.lost);
     $('#attention').innerHTML = !items.length ? '' :
       '<section class="attention" aria-label="要確認"><h3>要確認（' + items.length + '件）</h3>' + items.map(function (it) {
-        var open = findCard(it.id) ? '<button type="button" class="button small ghost" data-open="' + esc(it.id) + '">詳細を開く</button>' : '<span class="muted">一覧にはありません（入金済みなど）</span>';
+        var inList = !!findCard(it.id);
+        var open = inList ? '<button type="button" class="button small ghost" data-open="' + esc(it.id) + '">詳細を開く</button>' : '<span class="muted">一覧にはありません（入金済みなど）</span>';
+        // 書かれなかったと決まった希望は「この内容で開き直す」（自動では送らない）。未確定の間・書き込み中の請求では出さない（§8-13-1 の1）
+        var reopen = it.kind === 'lost' && it.wish && inList && !locked(it.id) && !(S.write && S.write.id === it.id)
+          ? '<button type="button" class="button small ghost" data-reopen-wish="' + esc(it.id) + '" data-idx="' + it.idx + '">この内容で開き直す</button>' : '';
         var act = it.kind === 'unsettled'
           ? '<button type="button" class="button small primary" data-settle-id="' + esc(it.id) + '">保存できたかを確かめる</button>'
           : '<button type="button" class="button small ghost" data-dismiss-lost="' + esc(it.id) + '" data-idx="' + it.idx + '">この控えを消す</button>';
+        var lines = it.wish ? V.wishLines(it.wish, S.staff) : [];
+        var wishHtml = lines.length ? '<div class="muted">変えようとした内容: ' + lines.map(esc).join('／') + '</div>' : '';
+        var uk = 'att:' + it.kind + ':' + it.id + ':' + (it.key || (it.kind === 'lost' ? 'i' + it.idx : ''));
         var memo = it.memo !== null && it.memo !== undefined && it.memo !== ''
-          ? '<details><summary>書いたメモを見る</summary><textarea readonly>' + esc(it.memo) + '</textarea></details>' : '';
-        return '<div class="attention-item"><strong>' + esc(it.partner) + '</strong> — ' + esc(it.text) + '<div class="attention-actions">' + act + open + '</div>' + memo + '</div>';
+          ? '<details data-ui-key="' + esc(uk) + ':d"><summary>書いたメモを見る</summary><textarea readonly data-ui-key="' + esc(uk) + ':t">' + esc(it.memo) + '</textarea></details>' : '';
+        return '<div class="attention-item"><strong>' + esc(it.partner) + '</strong>' + (it.billingNumber ? ' <span class="billing-no">No.' + esc(it.billingNumber) + '</span>' : '') + ' — ' + esc(it.text) + wishHtml + '<div class="attention-actions">' + act + reopen + open + '</div>' + memo + '</div>';
       }).join('') + '</section>';
   }
 
@@ -597,27 +673,35 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   function dateLabel(tab) { return tab === '未入金' ? '支払期日' : '作成日'; }
   function dateOf(card, tab) { return tab === '未入金' ? card.dueDate : card.createdAt; }
 
+  // 書き込み中の請求は、確定した状態に書き込み中の希望を重ねて見せる（段C §8-11-2 の6）。読み取りの応答は確定した状態にだけ当たる
+  function pendingWish(c) { return S.write && S.write.id === c.billingId && S.write.kind !== 'settle' ? S.write.wish : null; }
+  function shownStatus(c) { var w = pendingWish(c); return w && w.status !== undefined ? w.status : c.status; }
+  function shownMemo(c) { var w = pendingWish(c); return w && w.memo !== undefined ? w.memo : c.memo; }
+
   function cardHTML(c) {
     var unsettled = locked(c.billingId);
-    var drag = canDrag && !unsettled ? ' draggable="true"' : '';
-    return '<button type="button" class="invoice-card' + (S.openId === c.billingId ? ' is-active' : '') + (unsettled ? ' is-pending' : '') + '"' + drag +
-      ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + (c.billingNumber ? ' 請求番号 ' + esc(c.billingNumber) : '') + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(c.status) +
-      (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (unsettled ? ' 未確定' : '') + ' 詳細を開く">' +
+    var writing = !!(S.write && S.write.id === c.billingId);
+    var status = shownStatus(c);
+    var drag = canDrag && !unsettled && !writing ? ' draggable="true"' : '';
+    return '<button type="button" class="invoice-card' + (S.openId === c.billingId ? ' is-active' : '') + (unsettled || writing ? ' is-pending' : '') + '"' + drag +
+      ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + (c.billingNumber ? ' 請求番号 ' + esc(c.billingNumber) : '') + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(status) +
+      (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (writing ? ' 保存中' : unsettled ? ' 未確定' : '') + (c.paidMark ? ' 入金済み' : '') + ' 詳細を開く">' +
       '<span class="card-top"><span><span class="client">' + esc(c.partner) + '</span>' +
       (c.billingNumber ? '<span class="billing-no" title="請求番号">No.' + esc(c.billingNumber) + '</span>' : '') + '<span class="subject">' + esc(c.title) + '</span></span>' +
-      (unsettled ? '<span class="unsettled-mark">未確定</span>' : '') + '</span>' +
+      (writing ? '<span class="unsettled-mark">保存中</span>' : unsettled ? '<span class="unsettled-mark">未確定</span>' : '') +
+      (c.paidMark ? '<span class="unsettled-mark">入金済み</span>' : '') + '</span>' +
       // 担当の札は金額の下（メモ3行の左の空き）に置く。取引先名の右では長い名前に押されて切れた（ユーザー依頼 2026-09-30）
       '<span class="money-row"><span class="money-left"><span class="amount">' + V.yen(c.amount) + '</span>' +
       (S.features ? '<span class="assignee-tag' + (V.isUnassigned(S.staff, c.assignee) && !c.assignee ? ' none' : '') + '" title="担当">' + esc(V.assigneeLabel(S.staff, c.assignee)) + '</span>' : '') + '</span>' +
-      '<span class="memo-excerpt" title="メモの先頭3行">' + esc(V.memoExcerpt(c.memo)) + '</span></span>' +
+      '<span class="memo-excerpt" title="メモの先頭3行">' + esc(V.memoExcerpt(shownMemo(c))) + '</span></span>' +
       '<span class="card-bottom"><span class="date">' + dateLabel(S.tab) + ' ' + V.jpDate(dateOf(c, S.tab)) + '</span>' +
-      '<span class="age ' + V.ageClass(c.days) + '">' + V.ageLabel(S.tab, c.days) + '</span>' + statusBadge(c.status) + '</span></button>';
+      '<span class="age ' + V.ageClass(c.days) + '">' + V.ageLabel(S.tab, c.days) + '</span>' + statusBadge(status) + '</span></button>';
   }
 
   function listHTML(data) {
     if (!data.length) return '<div class="state-screen list-empty"><span class="symbol" aria-hidden="true">✓</span><h2>条件に合う請求はありません</h2><p>経過日数や検索の条件を変えて確認してください。</p></div>';
     return V.STATUSES.map(function (status) {
-      var items = data.filter(function (x) { return V.laneOf(x.status) === status; });
+      var items = data.filter(function (x) { return V.laneOf(shownStatus(x)) === status; });
       return '<section class="lane" data-lane="' + status + '" aria-label="' + status + '"><div class="lane-head"><span>' + status + '</span><b>' + items.length + '件</b></div>' +
         '<div class="lane-stack">' + (items.map(cardHTML).join('') || '<div class="lane-empty">該当なし</div>') + '</div></section>';
     }).join('');
@@ -627,14 +711,15 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // 詳細の読み込みには世代番号を付け、開き直し・読み直しの後に届いた古い応答は捨てる（W5 第3巡 指摘1）
   async function openDetail(id) {
     var card = findCard(id);
-    if (!card || S.busy) return;
+    if (!card) return;
     S.openId = id; S.openPartner = card.partner; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null; S.notice = null;
     S.detail = { loading: true, records: [] };
     var gen = ++S.detailGen;
     var ctx = has(S.unsettled, id) ? null : perfScene('detail');
     renderDetail(true);
     renderMain();
-    if (ctx) ctx.readyMs = Math.round(performance.now() - ctx.t0);   // 保存ボタンが押せるようになった時点（K2 で記録を待たない）
+    // 保存ボタンが押せるようになった時点（K2 の readyMs。承認済みの意味）。前の保存・一覧の読み込みの間は、押せるようになるまで追う（段C C2 R1）
+    if (ctx) { readyWatch = { ctx: ctx, id: id }; checkReady(); }
     // 前の保存・移動が未確定なら、記録を読む代わりに確定を頼む（確定の答えに記録も入っている）
     if (has(S.unsettled, id)) {
       S.notice = { kind: 'unknown', text: '前の操作が保存できたかを確かめています…' };
@@ -644,7 +729,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         S.detail = { loading: false, records: [] };
         S.notice = { kind: 'unknown', done: 'failed',
           text: '前の操作が保存できたかを、まだ確かめられていません。「もう一度確かめる」を押してください。確かめるまで、この請求は保存も移動もできません。' };
-        renderDetail();
+        refreshViews();                  // 非同期の応答の後は共通の入口で描く（変換中は待つ・選択を保つ。段C C2 N1）
       }
       return;
     }
@@ -657,23 +742,23 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   async function fetchDetail(id, gen, ctx) {
     var g = S.authGen;
     var r = await api('detail', detailBody(id), ctx ? { ctx: ctx, bg: true } : null);
-    if (ctx) perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs });
+    // 計測の行は、保存ボタンが押せるようになるまで（または閉じるまで）待ってから残す（段C C2 R1）
+    if (ctx) { ctx.pendingResult = V.perfResult(r); if (!(readyWatch && readyWatch.ctx === ctx)) flushDetailPerf(ctx); }
     if (g !== S.authGen || S.openId !== id || gen !== S.detailGen) return false;
     if (handleAuthFailure(r)) return false;
-    if (r.kind !== 'ok') { S.detail = { loading: false, records: S.detail ? S.detail.records : [], assigneeHistory: S.detail ? S.detail.assigneeHistory : [], error: V.failureText(r.kind, r.code) }; renderDetail(); return false; }
+    // 状態は今すぐ反映し、描き直しは共通の入口（refreshViews）で行う。変換中は描き直しを待ち、フォーカス・選択を保つ（段C C2 N1）
+    if (r.kind !== 'ok') { S.detail = { loading: false, records: S.detail ? S.detail.records : [], assigneeHistory: S.detail ? S.detail.assigneeHistory : [], error: V.failureText(r.kind, r.code) }; refreshViews(); return false; }
     var recs = V.mergeRecords(S.detail ? S.detail.records : [], r.json.records || []);
     var card = findCard(id);
     if (card && recs.length && recs[0].recordId > (card.lastRecordId || 0)) {
       card.status = recs[0].status; card.memo = recs[0].memo; card.lastRecordId = recs[0].recordId;
-      renderMain();
     }
     // 担当の履歴は records と分けて持ち、記録ID で重ねずに合わせる（第1巡 指摘1。保存の応答で先に入った1行を消さない）
     // 取引先が食い違ったときは、前に読んだ履歴も合わせずに捨てる（別の取引先の履歴を残さない。H1 実装レビュー第1巡 指摘2）
     var hist = r.json.partnerMismatch ? [] : V.mergeRecords(S.detail ? S.detail.assigneeHistory : [], r.json.assigneeHistory || []);
     applyAssigneeState(r.json.state);
-    if (S.features) renderMain();
     S.detail = { loading: false, records: recs, assigneeHistory: hist, partnerMismatch: !!r.json.partnerMismatch };
-    renderDetail();
+    refreshViews();
     return true;
   }
 
@@ -682,7 +767,6 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }
 
   function closeDetail(force) {
-    if (S.busy) return;                // 書き込みの間は閉じさせない
     var id = S.openId;
     var card = findCard(id);
     if (!force && !locked(id) && hasDraft(card) && !window.confirm('保存していない変更があります。閉じてよいですか？')) return;
@@ -691,6 +775,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     S.detailGen++;
     $('#detail').innerHTML = '';
     document.body.style.overflow = '';
+    checkReady();                      // 押せる前に閉じた詳細の計測の行を残す（段C C2 R1）
     if (S.tabs && S.screen === 'main') renderMain();
     // 一覧は描き直しているので、開いたカードを請求IDで探し直してフォーカスを戻す
     var back = id ? document.querySelector('.invoice-card[data-open="' + CSS.escape(id) + '"]') : null;
@@ -705,11 +790,15 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var keepCaret = memoEl && document.activeElement === memoEl ? [memoEl.selectionStart, memoEl.selectionEnd] : null;
     // 描き直すと中の部品が作り直されるので、詳細の中にあったフォーカスを失わないように覚えておく
     var hadFocus = $('#detail').contains(document.activeElement);
-    var current = S.draftStatus !== null ? S.draftStatus : card.status;
-    var memo = S.draftMemo !== null ? S.draftMemo : card.memo;
-    // 未確定の操作がある間は操作させない。読み直し中・衝突・入金済みも、読み直すまで保存させない
-    var busy = !!S.busy || locked(S.openId) ||
+    var focusKey = hadFocus ? focusKeyOf(document.activeElement) : null;   // 描き直しても同じ部品へ戻す（段C B-T4）
+    var writing = !!(S.write && S.write.id === S.openId);
+    var current = S.draftStatus !== null ? S.draftStatus : shownStatus(card);
+    var memo = S.draftMemo !== null ? S.draftMemo : shownMemo(card);
+    // 書き込み中・未確定の請求は操作させない（その請求だけ。段C §8-11-2 の2）。読み直し中・衝突・入金済みも、読み直すまで保存させない
+    var busy = writing || locked(S.openId) ||
       (S.notice && ((S.notice.kind === 'unknown' && S.notice.done !== 'ok') || S.notice.kind === 'conflict' || S.notice.kind === 'paid'));
+    // 別の請求の保存中・一覧などの読み込み中は、書けるが保存ボタンだけ待たせる（段C §8-11-1・C2 R1。計測の readyMs と同じ条件）
+    var waitPrev = !busy && !canWrite();
     var choices = V.STATUSES.map(function (s) {
       return '<button type="button" class="choice" data-choice="' + s + '" aria-pressed="' + (current === s) + '"' + (busy ? ' disabled' : '') + '><span class="dot"></span>' + s + '</button>';
     }).join('');
@@ -724,7 +813,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<button class="button small ghost" type="button" data-close>✕ 閉じる</button></div>' +
       '<h2 id="detail-title">' + esc(card.partner) + '</h2><div class="subject">' + esc(card.title) + '</div>' +
       '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong><span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
-      '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(card.status) + '</div></header>' +
+      '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(shownStatus(card)) + (writing ? '<span class="pill">保存中</span>' : '') + '</div></header>' +
       '<div class="detail-body">' + noticeHTML() + lostBoxHTML() +
       // 左に連絡状況とメモ、右に担当と記録。左右の先頭をそろえる（ユーザー依頼 2026-09-27）
       '<div class="detail-columns"><section><h3>連絡状況を選ぶ</h3><div class="status-choices" role="group" aria-label="連絡状況" style="margin-bottom:16px">' + choices + '</div>' +
@@ -732,14 +821,71 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<textarea class="note-area" id="memo" maxlength="5000" placeholder="先方への連絡内容や次の予定を記入"' + (busy ? ' disabled' : '') + '>' + esc(memo) + '</textarea>' +
       '<div class="limit" id="limit">' + memo.length + ' / 5,000文字</div></section>' +
       '<section>' + assigneeHTML(card, busy) + '<h3>記録（新しい順）</h3><div class="history">' + hist + '</div></section></div>' +
-      '<div class="detail-actions"><button type="button" class="button teal" data-save' + (busy ? ' disabled' : '') + '>変更をまとめて保存</button>' +
+      '<div class="detail-actions"><button type="button" class="button teal" data-save' + (busy ? ' data-card-busy' : '') + (busy || waitPrev ? ' disabled' : '') + '>' +
+      (waitPrev ? waitLabel() : writing ? '保存しています…' : '変更をまとめて保存') + '</button>' +
       '<span class="feedback" role="status">' + (S.notice && (S.notice.kind === 'saved' || S.notice.kind === 'info') ? esc(S.notice.text) : '') + '</span></div>' +
       '</div></article></div>';
     document.body.style.overflow = 'hidden';
-    if (S.busy) return;                // 書き込み中はフォーカスを「保存中」の覆いに置いたままにする
     var m = document.getElementById('memo');
+    var back = focusKey ? document.querySelector(focusKey) : null;
     if (keepCaret && m && !m.disabled) { m.focus(); m.setSelectionRange(keepCaret[0], keepCaret[1]); }
+    else if (back && !back.disabled) back.focus();
     else if (focus || hadFocus) document.querySelector('.detail-panel').focus();
+  }
+  // 描き直しをまたいで、フォーカス・選択・開閉・詳細の位置を保つ（段C C2 R2）。
+  // 部品は安定した印（data-ui-key、要確認・控えのボタンの data 属性）で探し直す
+  function uiSelectorOf(el) {
+    if (!el || !el.getAttribute || el === document.body) return null;
+    var k = el.getAttribute('data-ui-key');
+    if (k) return '[data-ui-key="' + CSS.escape(k) + '"]';
+    if (el.id === 'memo' || el.id === 'search') return '#' + el.id;
+    var inAtt = el.closest && el.closest('#attention');
+    var scope = inAtt ? '#attention ' : el.closest && el.closest('#detail') ? '#detail ' : '';
+    var attrs = ['data-settle-id', 'data-reopen-wish', 'data-dismiss-lost', 'data-choice', 'data-assignee'];
+    for (var i = 0; i < attrs.length; i++) {
+      if (el.hasAttribute(attrs[i])) {
+        var sel = scope + '[' + attrs[i] + '="' + CSS.escape(el.getAttribute(attrs[i])) + '"]';
+        if (el.hasAttribute('data-idx')) sel += '[data-idx="' + CSS.escape(el.getAttribute('data-idx')) + '"]';
+        return sel;
+      }
+    }
+    if (el.hasAttribute('data-open')) return (inAtt ? '#attention ' : '') + (el.classList.contains('invoice-card') ? '.invoice-card' : 'button') + '[data-open="' + CSS.escape(el.dataset.open) + '"]';
+    if (el.hasAttribute('data-close')) return '#detail [data-close]';
+    if (el.hasAttribute('data-save')) return '#detail [data-save]';
+    return null;
+  }
+  function captureUI() {
+    var a = document.activeElement;
+    var sel = null;
+    try { if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && typeof a.selectionStart === 'number') sel = [a.selectionStart, a.selectionEnd, a.selectionDirection]; } catch (e) { sel = null; }
+    var open = Array.prototype.map.call(document.querySelectorAll('details[data-ui-key][open]'), function (d) { return d.getAttribute('data-ui-key'); });
+    var panel = document.querySelector('.detail-panel');
+    return { key: uiSelectorOf(a), sel: sel, open: open, panelTop: panel ? panel.scrollTop : null };
+  }
+  function restoreUI(u) {
+    if (!u) return;
+    u.open.forEach(function (k) { var d = document.querySelector('details[data-ui-key="' + CSS.escape(k) + '"]'); if (d) d.open = true; });
+    var panel = document.querySelector('.detail-panel');
+    if (panel && u.panelTop !== null) panel.scrollTop = u.panelTop;
+    var el = u.key ? document.querySelector(u.key) : null;
+    if (el && !el.disabled && document.activeElement !== el) el.focus({ preventScroll: true });
+    if (el && u.sel && el.setSelectionRange) { try { el.setSelectionRange(u.sel[0], u.sel[1], u.sel[2]); } catch (e) { /* 選べない部品 */ } }
+  }
+  // 入力の変換中（IME）は描き直さない。変換が終わったら、待っていた描き直しを行う（段C C2 R2）
+  document.addEventListener('compositionstart', function () { S.composing = true; });
+  document.addEventListener('compositionend', function () {
+    S.composing = false;
+    if (S.refreshPending) { S.refreshPending = false; setTimeout(refreshViews, 0); }
+  });
+
+  // 詳細の中の部品を、描き直した後に探し直すための選び方（連絡状況・担当・閉じる・保存）
+  function focusKeyOf(el) {
+    if (!el || !el.dataset) return null;
+    if (el.dataset.choice) return '#detail [data-choice="' + CSS.escape(el.dataset.choice) + '"]';
+    if (el.hasAttribute('data-assignee')) return '#detail [data-assignee="' + CSS.escape(el.dataset.assignee) + '"]';
+    if (el.hasAttribute('data-close')) return '#detail [data-close]';
+    if (el.hasAttribute('data-save')) return '#detail [data-save]';
+    return null;
   }
 
   // 「この取引先の担当」（ar-app-assignee §2-2 の1）。担当に対応していないサーバ・取引先ID の無い請求では押せるボタンを出さない
@@ -753,10 +899,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var btn = function (email, label, disabled) {
       return '<button type="button" class="choice" data-assignee="' + esc(email) + '" aria-pressed="' + (current === email) + '"' + (busy || disabled ? ' disabled' : '') + '>' + esc(label) + '</button>';
     };
-    var list = S.staff.filter(function (x) { return x.active; }).map(function (x) { return btn(x.email, x.name, false); });
+    // 同じ取引先で担当を変える書き込みが、送信中・未確定のまま残っている間は押せない（段C §8-11-2 の3・§8-13-2 の1）
+    var plock = V.partnerAssigneeLocked(S.write, S.unsettled, card.partnerId);
+    var list = S.staff.filter(function (x) { return x.active; }).map(function (x) { return btn(x.email, x.name, plock); });
     if (now && V.isUnassigned(S.staff, now)) list.unshift(btn(now, V.assigneeLabel(S.staff, now), true));   // 無効の営業は選び直せない
-    list.push(btn('', '未割り当て', false));
-    return head +
+    list.push(btn('', '未割り当て', plock));
+    return head + (plock ? '<p class="assignee-note">同じ取引先の担当を保存中・確認中のため、担当は変えられません。連絡状況・メモは保存できます。</p>' : '') +
       '<div class="status-choices assignee-choices" role="group" aria-label="この取引先の担当" style="margin-bottom:16px">' + list.join('') + '</div>';
   }
 
@@ -772,70 +920,81 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     return '<div class="notice' + (n.kind === 'error' || n.kind === 'conflict' ? ' error' : '') + '" role="alert">' + esc(n.text) + btn + '</div>';
   }
 
-  // 「保存されなかったメモ」欄。知らせとは別に、S.unsettled（確定前）と S.lost の控え（すべて）を表示する。
-  // 連絡状況を選ぶ・読み直す・閉じるでは消えない。消えるのは「消す」を押したときと、同じ内容の保存が成功したときだけ
+  // 「保存されなかった変更」欄。知らせとは別に、S.unsettled（確定前）と S.lost の控え（すべて）を表示する。
+  // 連絡状況を選ぶ・読み直す・閉じるでは消えない。消えるのは「消す」を押したときと、同じ内容の保存が成功したとき（メモだけの古い控え）だけ
   function lostBoxHTML() {
     var id = S.openId;
     var out = '';
     var u = has(S.unsettled, id) ? S.unsettled[id] : null;
-    if (u && u.lostMemo) {
-      out += '<div class="notice lost-memo" role="note">あなたが書いたメモ（保存できたかを確かめています。必要ならコピーしてください）<textarea readonly>' + esc(u.lostMemo) + '</textarea></div>';
+    if (u) {
+      var ul = V.wishLines(u.wish, S.staff);
+      out += '<div class="notice lost-memo" role="note">保存できたかを確かめています' + (ul.length ? '（' + ul.map(esc).join('／') + '）' : '') +
+        (u.lostMemo ? '。書いたメモ（必要ならコピーしてください）<textarea readonly data-ui-key="box:u:' + esc(id) + '">' + esc(u.lostMemo) + '</textarea>' : '') + '</div>';
     }
     (has(S.lost, id) ? S.lost[id].items : []).forEach(function (it, idx) {
-      out += '<div class="notice lost-memo" role="note">' + (it.memo === null
-        ? '保存されなかった変更（' + esc(it.text) + '）'
-        : '保存されなかったメモ' + (it.text ? '（' + esc(it.text) + '）' : '') + '。必要ならコピーして、メモ欄に貼り直してください<textarea readonly>' + esc(it.memo) + '</textarea>') +
+      var wl = it.wish ? V.wishLines(it.wish, S.staff) : [];
+      out += '<div class="notice lost-memo" role="note">' + (it.memo === null || it.memo === ''
+        ? '保存されなかった変更（' + esc(it.text) + (wl.length ? '。' + wl.map(esc).join('／') : '') + '）'
+        : '保存されなかったメモ' + (it.text ? '（' + esc(it.text) + (wl.length ? '。' + wl.map(esc).join('／') : '') + '）' : '') + '。必要ならコピーして、メモ欄に貼り直してください<textarea readonly data-ui-key="box:l:' + esc(id) + ':' + idx + '">' + esc(it.memo) + '</textarea>') +
         '<button type="button" class="button small ghost" data-dismiss-lost="' + esc(id) + '" data-idx="' + idx + '">この控えを消す</button></div>';
     });
     return out;
   }
 
-  // 保存（計画 §3-5）。1回の保存＝変わった項目だけを1回送る。書き込みの間は画面全体を止める（詳細も閉じられない）
+  // 保存（計画 §3-5）。1回の保存＝変わった項目だけを1回送る。
+  // 段C 案B+（§8-11・§8-13）: 押したらすぐ詳細を閉じ、裏で1件だけ送る。書きかけは操作の希望に写してある
   function save() {
     var id = S.openId;
     var card = findCard(id);
-    if (!card || locked(id)) return;
-    var body = V.buildUpdate(card, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null);
-    if (!body) { S.notice = { kind: 'info', text: '変更はありません' }; renderDetail(); return; }
+    if (!card || locked(id) || (S.write && S.write.id === id)) return;
+    if (!canWrite()) { refuseWrite('save'); return; }
+    var da = S.features ? S.draftAssignee : null;
+    var dropped = null;
+    // 同じ取引先の担当が保存中・未確定なら、担当は黙って送らず・黙って外さず、本人に選ばせる（§8-11-2 の3）
+    if (da !== null && da !== (card.assignee || '') && V.partnerAssigneeLocked(S.write, S.unsettled, card.partnerId)) {
+      if (!window.confirm('同じ取引先の担当を確かめているため、担当は保存できません。\n\n［OK］担当を外して、連絡状況・メモだけを保存する\n［キャンセル］保存しないで待つ（書きかけは残ります）')) return;
+      dropped = da; da = null;
+    }
+    var body = V.buildUpdate(card, S.draftStatus, S.draftMemo, da);
+    if (!body) {
+      S.notice = { kind: 'info', text: dropped !== null ? '担当のほかに変更はありません。同じ取引先の担当を確かめ終わってから、もう一度保存してください' : '変更はありません' };
+      renderDetail();
+      return;
+    }
     body.opId = newOpId();
+    var op = newOp('save', card, body);
     var ctx = perfScene('save');
-    exclusive('保存しています…', function () { return saveInner(id, body, ctx); }, 'save').then(function () { closeIfSaved(id); });
-  }
-
-  // 保存できたら詳細を閉じ、一覧の上の知らせで伝える（ユーザー依頼 2026-09-26）。書き込みの間は閉じられないので、書き込みが終わってから閉じる
-  function closeIfSaved(id) {
-    var c = S.closeAfterSave;
-    S.closeAfterSave = null;
-    if (!c || c.id !== id || S.openId !== id) return;
+    // 外した担当の希望も、詳細を閉じた後に回収できるように要確認へ残す（§8-14-2 の I2）
+    if (dropped !== null) V.addWish(S.lost, id, card.partner, '担当は保存していません（同じ取引先の担当を確かめていたため）', { assignee: dropped }, { key: 'draft:' + newOpId(), billingNumber: card.billingNumber });
     closeDetail(true);
-    toast(c.text);
+    runWrite(op, function () { return saveInner(op, body, ctx); }, 'save');
+    ctx.readyMs = Math.round(performance.now() - ctx.t0);   // 押してから、詳細を閉じて一覧を描き直し終わるまで（実測。§8-11-2 の9）
   }
 
-  async function saveInner(id, body, ctx) {
-    var lostMemo = body.memo !== undefined ? body.memo : null;
-    S.notice = null;
-    S.closeAfterSave = null;
-    var r = await api('update', body, { ctx: ctx });
-    var card = findCard(id);
-    perfEnd(ctx, V.perfResult(r));
+  async function saveInner(op, body, ctx) {
+    var r = await api('update', body, { ctx: ctx, keepalive: true });
+    perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs });
+    if (!stillMine(op)) return;          // サインインが切れた後の古い応答は捨てる（切れた瞬間に未確定にしてある。§8-13-1 の2）
     if (handleAuthFailure(r)) return;
+    var id = op.id;
+    var card = findCard(id);
     if (r.kind === 'ok') {
       if (card) applyState(card, r.json.state);
-      // 保存されなかったメモと同じ内容が保存できたら、控えは役目を終えた
+      // 保存されなかったメモと同じ内容が保存できたら、メモだけの古い控えは役目を終えた
       V.removeLostMemo(S.lost, id, r.json.state.memo);
-      // 記録の欄へ保存した1行を足す。詳細の読み込み中でも足し、後から届く記録と記録ID で合わせる（K2）
+      // 記録の欄へ保存した1行を足す（その請求の詳細が開いているときだけ。K2）
       if (!r.json.unchanged && S.detail && S.openId === id) {
         S.detail.records = V.mergeRecords(S.detail.records, [{ recordId: r.json.state.lastRecordId, at: r.json.state.at, status: r.json.state.status, memo: r.json.state.memo,
           statusChanged: body.status !== undefined, memoChanged: body.memo !== undefined, email: S.user ? S.user.email : '' }]);
       }
-      S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
-      S.notice = { kind: r.json.unchanged ? 'info' : 'saved', text: r.json.unchanged ? '変更はありません' : '✓ 保存しました' };
       var st = r.json.state;
       if (!V.assigneeSaved(body, st)) {
-        // 旧サーバに戻っていた: 連絡状況・メモだけが保存され、担当は捨てられた。保存できたように見せない（第1巡 指摘2）
-        V.addIntent(S.lost, id, card ? card.partner : S.openPartner, '担当「' + V.assigneeLabel(S.staff, body.assignee) + '」は保存されませんでした（担当に対応していない版のサーバでした）。一覧を取り直してから、もう一度操作してください');
-        S.notice = { kind: 'error', text: (body.status !== undefined || body.memo !== undefined ? '連絡状況・メモは保存しました。' : '') + '担当は保存されませんでした。一覧を取り直してから、もう一度操作してください。' };
-      } else if (st && typeof st.assignee === 'string') {
+        // 旧サーバに戻っていた: 連絡状況・メモだけが保存され、担当は捨てられた。担当の希望だけを要確認に残す（§8-14-1 の P1）
+        V.addWish(S.lost, id, op.partner, '担当は保存されませんでした（担当に対応していない版のサーバでした）。一覧を取り直してから、もう一度操作してください', { assignee: body.assignee }, opMeta(op));
+        toast('「' + op.partner + '」の' + (body.status !== undefined || body.memo !== undefined ? '連絡状況・メモは保存しましたが、' : '') + '担当は保存されませんでした。「要確認」を見てください。', 'error');
+        return;
+      }
+      if (st && typeof st.assignee === 'string') {
         var prevAsg = card ? card.assignee || '' : '';
         applyAssigneeState(st);
         if (body.assignee !== undefined && !r.json.unchanged && st.assigneeRecordId === st.lastRecordId && S.detail && S.openId === id) {
@@ -843,48 +1002,44 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
             billingNumber: card ? card.billingNumber : '', sameBilling: true, from: prevAsg, to: st.assignee }]);
         }
       }
-      if (V.closeAfterSave(body, r.json)) S.closeAfterSave = { id: id, text: '✓ 「' + (card ? card.partner : S.openPartner) + '」を保存しました' };
+      toast(r.json.unchanged ? '「' + op.partner + '」は変更がありませんでした' : '✓ 「' + op.partner + '」を保存しました');
       return;
     }
     if (r.kind === 'fail') {
-      var kind = r.code === 'CONFLICT' ? 'conflict' : (r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND') ? 'paid' : 'error';
-      V.addLost(S.lost, id, card ? card.partner : S.openPartner, V.failureText(r.kind, r.code), lostMemo);   // 先の控えは上書きしない
-      if (body.assignee !== undefined) V.addIntent(S.lost, id, card ? card.partner : S.openPartner, V.failureText(r.kind, r.code) + '（担当「' + V.assigneeLabel(S.staff, body.assignee) + '」は保存していません）');
-      S.notice = {
-        kind: kind,
-        text: kind === 'conflict' ? 'ほかの人が先に更新しました。あなたの変更は保存していません。最新の内容を表示し直してから、もう一度操作してください。'
-          : kind === 'paid' ? V.failureText(r.kind, r.code) + '。保存はしていません。一覧を取り直してください。'
-            : V.failureText(r.kind, r.code) + '。保存はしていません。もう一度お試しください。'
-      };
+      var why = V.failureText(r.kind, r.code);
+      var paid = r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND';
+      if (r.code === 'CONFLICT' && card && r.json.state) applyState(card, r.json.state);
+      if (paid && card) card.paidMark = true;   // 一覧は自動では取り直さない（§8-13-1 の3）
+      // 書かれなかったと決まった: 希望の全項目を要確認の1件にまとめてから、その操作を外す（§8-13-1 の1）
+      V.addWish(S.lost, id, op.partner, why + '。保存していません', op.wish, opMeta(op));
+      toast('「' + op.partner + '」を保存できませんでした（' + why + '）。書いた内容は「要確認」に残しています。' + (paid ? '一覧を取り直すと消えます。' : ''), 'error');
       return;
     }
     // 壊れた応答・打ち切り・通信の失敗: 書けたかどうか分からない。送り直さず、その操作IDの確定を頼む（G12 ④・§6-13）
-    S.unsettled[id] = { opId: body.opId, kind: 'save', lostMemo: lostMemo, partner: card ? card.partner : S.openPartner, assignee: body.assignee };
-    S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
-    S.busy = { text: '保存できたかを確かめています…' };
-    renderBusy();
-    await settleInner(id, perfScene('settle'));
-    // 確かめた結果、担当も含めて保存できていたときだけ閉じる（知らせの種類 saved は settleInner がその場合だけ付ける）
-    if (!has(S.unsettled, id) && S.openId === id && S.notice && S.notice.kind === 'saved') {
-      S.closeAfterSave = { id: id, text: '✓ 「' + (card ? card.partner : S.openPartner) + '」の保存はできていました' };
-    }
+    S.unsettled[id] = unsettledOf(op);
+    await settleInner(id, perfScene('settle'), op);
   }
 
   // 未確定の操作の「確定」を、書き込みとして1つだけ走らせる
   function runSettle(id) {
+    var u = S.unsettled[id];
+    if (!u) return Promise.resolve(false);
     var ctx = perfScene('settle');
-    return exclusive('保存できたかを確かめています…', function () { return settleInner(id, ctx); }, 'detail');
+    var op = { opId: u.opId, id: id, partnerId: u.partnerId || '', partner: u.partner, billingNumber: u.billingNumber || '', kind: 'settle', wish: u.wish || {}, gen: S.authGen, owner: S.ownerKey };
+    return runWrite(op, function () { return settleInner(id, ctx, op); }, 'detail');
   }
 
   // 未確定の操作の「確定」を頼む（§6-13）。サーバはロックの中で、その操作IDの記録があれば written、
   // 無ければ取り消しの印を付けて cancelled を返す。どちらでも、その後にその操作が書かれることは無い。
   // 答えを受け取れなければ未確定のまま残し、その請求を操作させない（要確認から、いつでも確かめ直せる）
-  async function settleInner(id, ctx) {
+  async function settleInner(id, ctx, op) {
     var u = S.unsettled[id];
     if (!u) return;
     var r = await api('detail', detailBody(id, { settleOpId: u.opId }), ctx ? { ctx: ctx } : null);
     if (ctx) perfEnd(ctx, r.kind === 'ok' && r.json.settled ? r.json.settled : r.kind === 'ok' ? 'unknown' : V.perfResult(r));
+    if (op && !stillMine(op)) return;    // サインインが切れた後の古い応答は捨てる（未確定の控えは残っている）
     if (handleAuthFailure(r)) return;
+    if (S.unsettled[id] !== u) return;   // 確定の間に別の経路で片付いていた
     var card = findCard(id);
     var open = S.openId === id;
     if (r.kind !== 'ok' || !r.json.settled) {
@@ -898,19 +1053,22 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       }
       return;
     }
+    var w = u.wish || { memo: u.lostMemo || undefined, assignee: u.assignee, status: u.kind === 'drag' ? u.to : undefined };
     delete S.unsettled[id];
     if (card) applyState(card, r.json.state);
     applyAssigneeState(r.json.state);
     var written = r.json.settled === 'written';
-    // 保存できていたなら、通常の保存成功と同じく、保存後のメモと同じ内容の控えだけを外す（差分確認 第2巡 条件）
+    // 保存できていたなら、通常の保存成功と同じく、保存後のメモと同じ内容のメモだけの控えを外す（差分確認 第2巡 条件）
     if (written && r.json.state) V.removeLostMemo(S.lost, id, r.json.state.memo);
     // 書けていても、担当が保存できたかはその操作の行の証拠（settledOp）で判断する。今の担当の欄は証拠にしない
     // （旧サーバが書いた後に新サーバで確定すると、今の担当は入るが、その操作では担当を変えていない。H1 実装レビュー第1巡 指摘1・第2巡 指摘1）
+    // 担当が保存されなかった・確かめられないときは、担当の希望だけを要確認に残す（§8-14-1 の P1）
     var asgRes = written && u.assignee !== undefined ? V.settledAssignee(u.assignee, r.json) : 'na';
     var asgLost = asgRes === 'notSaved' || asgRes === 'unknown';
-    var asgLabel = u.assignee !== undefined ? V.assigneeLabel(S.staff, u.assignee) : '';
-    if (asgRes === 'notSaved') V.addIntent(S.lost, id, u.partner, '担当「' + asgLabel + '」は保存されませんでした（担当に対応していない版のサーバが書いていました）。一覧を取り直してから、もう一度操作してください');
-    if (asgRes === 'unknown') V.addIntent(S.lost, id, u.partner, '担当「' + asgLabel + '」が保存できたかを確かめられませんでした（担当に対応していない版のサーバが答えました）。一覧を取り直して担当を確かめ、違っていればもう一度操作してください');
+    if (asgRes === 'notSaved') V.addWish(S.lost, id, u.partner, '担当は保存されませんでした（担当に対応していない版のサーバが書いていました）。一覧を取り直してから、もう一度操作してください', { assignee: u.assignee }, opMeta(u));
+    if (asgRes === 'unknown') V.addWish(S.lost, id, u.partner, '担当が保存できたかを確かめられませんでした（担当に対応していない版のサーバが答えました）。一覧を取り直して担当を確かめ、違っていればもう一度操作してください', { assignee: u.assignee }, opMeta(u));
+    // 取り消した（書かれなかったと決まった）: 希望の全項目を要確認の1件にまとめる（§8-13-1 の1）
+    if (!written) V.addWish(S.lost, id, u.partner, '保存はできていませんでした（取り消しました）', w, opMeta(u));
     if (open) {
       S.detailGen++;                   // 確定の答え（記録つき）を正とする。これより前に始めた読み込みの応答は捨てる
       S.detail = { loading: false, records: r.json.records || [], assigneeHistory: r.json.assigneeHistory || [], partnerMismatch: !!r.json.partnerMismatch };
@@ -919,21 +1077,19 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
         : written
         ? { kind: 'saved', text: '✓ 保存できていました（記録の先頭）' }
         : { kind: 'unknown', done: 'ok',
-          text: '保存されていませんでした。この操作は取り消したので、あとから書かれることはありません。最新の内容を表示しています。必要ならもう一度操作してください。' };
+          text: '保存されていませんでした。この操作は取り消したので、あとから書かれることはありません。最新の内容を表示しています。書いた内容は「要確認」に残しています。' };
     }
-    if (!written) V.addLost(S.lost, id, u.partner, '保存はできていませんでした（取り消しました）', u.lostMemo);
-    if (!written && u.assignee !== undefined) V.addIntent(S.lost, id, u.partner, '担当「' + V.assigneeLabel(S.staff, u.assignee) + '」は保存できていませんでした（取り消しました）。もう一度操作してください');
     if (u.kind === 'drag' || !open) {
       toast(asgLost ? '「' + u.partner + '」の連絡状況・メモは保存できていましたが、担当は' + (asgRes === 'unknown' ? '保存できたかを確かめられませんでした' : '保存されませんでした') + '。「要確認」を見てください。'
         : written ? '「' + u.partner + '」の' + (u.kind === 'drag' ? ' ' + u.to + ' への移動' : '保存') + 'はできていました'
-        : '「' + u.partner + '」の' + (u.kind === 'drag' ? '移動' : '保存') + 'はできていませんでした（取り消しました）。最新の状態で表示しています。', written && !asgLost ? '' : 'error');
+        : '「' + u.partner + '」の' + (u.kind === 'drag' ? '移動' : '保存') + 'はできていませんでした（取り消しました）。書いた内容は「要確認」に残しています。', written && !asgLost ? '' : 'error');
     }
   }
 
   // 「最新の内容を表示」「読み直す」。書きかけのメモは知らせの中に残す（消さない）。読み直すまで保存させない
   async function reloadDetail() {
-    if (S.busy) return;
     var id = S.openId;
+    if (!id || (S.write && S.write.id === id)) return;
     var gen = ++S.detailGen;
     S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.notice = { kind: 'unknown', text: '最新の内容を読み直しています…' };
@@ -941,9 +1097,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var ok = await fetchDetail(id, gen);
     if (S.openId !== id || gen !== S.detailGen) return;
     S.notice = ok
-      ? { kind: 'info', text: has(S.lost, id) ? '最新の内容を表示しました（あなたが書いたメモは「保存されなかったメモ」に残しています）' : '最新の内容を表示しました' }
+      ? { kind: 'info', text: has(S.lost, id) ? '最新の内容を表示しました（あなたが書いた内容は「保存されなかった変更」に残しています）' : '最新の内容を表示しました' }
       : { kind: 'unknown', done: 'failed', text: '最新の状態を読み直せませんでした。「もう一度読み直す」を押してください。読み直すまで保存はできません。' };
-    renderDetail();
+    refreshViews();
   }
 
   // 記録ID が今より古い状態では戻さない（K2。遅れて届いた応答でカードを巻き戻さない）
@@ -952,46 +1108,58 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     card.status = st.status; card.memo = st.memo; card.lastRecordId = st.lastRecordId;
   }
 
-  // ---- ドラッグ＆ドロップ（パソコンだけ。§3-5）。書き込みなので、保存と同じく1つだけ・画面を止める ----
-  function moveByDrag(id, toStatus) {
-    var card = findCard(id);
-    if (!card || card.status === toStatus || locked(id)) return;
-    var ctx = perfScene('drag');
-    exclusive('移動しています…', function () { return moveInner(id, toStatus, ctx); }, 'drag');
+  // 要確認の「この内容で開き直す」: 詳細を開き、希望の全項目を書きかけとして入れる。自動では送らない（§8-13-1 の1）。
+  // 別の請求の書きかけは、閉じる確認を通す（§8-14-2 の I2）
+  function reopenWish(id, idx) {
+    var e = S.lost[id];
+    var it = e && e.items[idx];
+    if (!it || !it.wish || !findCard(id) || locked(id) || (S.write && S.write.id === id)) return;
+    if (S.openId) { closeDetail(false); if (S.openId) return; }
+    openDetail(id);                      // 書きかけを空にして開く（ここまでは同期で進む）
+    if (S.openId !== id) return;
+    if (it.wish.status !== undefined) S.draftStatus = it.wish.status;
+    if (it.wish.memo !== undefined) S.draftMemo = it.wish.memo;
+    if (it.wish.assignee !== undefined && S.features) S.draftAssignee = it.wish.assignee;
+    renderDetail();
   }
 
-  async function moveInner(id, toStatus, ctx) {
+  // ---- ドラッグ＆ドロップ（パソコンだけ。§3-5）。書き込みなので、保存と同じく1つだけ。画面は止めない（段C） ----
+  function moveByDrag(id, toStatus) {
     var card = findCard(id);
-    var from = card.status;
-    var opId = newOpId();
-    card.status = toStatus;            // 落とした時点で移しておく
-    renderMain();
-    var r = await api('update', { billingId: id, status: toStatus, baseRecordId: card.lastRecordId || 0, opId: opId }, { ctx: ctx });
-    perfEnd(ctx, V.perfResult(r));
-    card = findCard(id) || card;
+    if (!card || card.status === toStatus || locked(id) || (S.write && S.write.id === id)) return;
+    if (!canWrite()) { refuseWrite('drag'); return; }
+    var body = { billingId: id, status: toStatus, baseRecordId: card.lastRecordId || 0, opId: newOpId() };
+    var op = newOp('drag', card, body);
+    var ctx = perfScene('drag');
+    runWrite(op, function () { return moveInner(op, body, ctx); }, 'drag');
+    ctx.readyMs = Math.round(performance.now() - ctx.t0);   // 落としてから、移した先を描き終わるまで（実測。定義の0ではない。C2 R1）
+  }
+
+  // 移した先は書き込み中の上書き（shownStatus）で見せ、確定した状態は応答でだけ変える（§8-11-2 の6）
+  async function moveInner(op, body, ctx) {
+    var r = await api('update', body, { ctx: ctx, keepalive: true });
+    perfEnd(ctx, V.perfResult(r), { readyMs: ctx.readyMs });
+    if (!stillMine(op)) return;
     if (handleAuthFailure(r)) return;
+    var card = findCard(op.id);
     if (r.kind === 'ok') {
-      applyState(card, r.json.state);
-      toast('「' + card.partner + '」を ' + toStatus + ' へ移しました');
+      if (card) applyState(card, r.json.state);
+      toast('「' + op.partner + '」を ' + body.status + ' へ移しました');
       return;
     }
     if (r.kind !== 'fail') {
       // 書けたかどうか分からない（G12 ④）。未確定にして確定を頼む。一覧の取り直しでは外さない
-      S.unsettled[id] = { opId: opId, kind: 'drag', partner: card.partner, to: toStatus };
-      S.busy = { text: '移動できたかを確かめています…' };
-      renderBusy();
-      await settleInner(id, perfScene('settle'));
+      S.unsettled[op.id] = unsettledOf(op);
+      await settleInner(op.id, perfScene('settle'), op);
       return;
     }
-    card.status = from;                // 元のレーンへ戻す
-    if (r.code === 'CONFLICT') applyState(card, r.json.state);
-    if (r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND') {
-      toast('移せませんでした: ' + V.failureText(r.kind, r.code) + '。一覧を取り直します。', 'error');
-      await loadList();
-      return;
-    }
-    toast('移せませんでした: ' + V.failureText(r.kind, r.code) + '。' +
-      (r.code === 'CONFLICT' ? '最新の連絡状況で表示し直しました。' : '元のレーンへ戻しました。'), 'error');
+    var why = V.failureText(r.kind, r.code);
+    var paid = r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND';
+    if (r.code === 'CONFLICT' && card && r.json.state) applyState(card, r.json.state);
+    if (paid && card) card.paidMark = true;   // 一覧は自動では取り直さない（§8-13-1 の3）
+    V.addWish(S.lost, op.id, op.partner, why + '。移していません', op.wish, opMeta(op));
+    toast('移せませんでした: ' + why + '。' + (r.code === 'CONFLICT' ? '最新の連絡状況で表示し直しました。' : '元のレーンのままです。') +
+      (paid ? '一覧を取り直すと消えます。' : ''), 'error');
   }
 
   // ---- 小さな知らせ ----
@@ -1005,9 +1173,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     toastTimer = setTimeout(function () { el.hidden = true; }, kind === 'error' ? 8000 : 4000);
   }
 
-  // ---- 操作の受け取り（書き込みの間は、どの操作も受け付けない） ----
+  // ---- 操作の受け取り（段C: 書き込みの間も受け付ける。止めるものは各関数が断る） ----
   document.addEventListener('click', function (e) {
-    if (S.busy) { e.preventDefault(); e.stopPropagation(); return; }
     if (e.target.matches && e.target.matches('[data-overlay]')) { closeDetail(false); return; }
     var b = e.target.closest('button');
     if (!b) return;
@@ -1018,13 +1185,14 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     else if (b.hasAttribute('data-assignee')) { S.draftAssignee = b.dataset.assignee; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-save')) save();
     else if (b.hasAttribute('data-refresh')) loadList();
-    else if (b.hasAttribute('data-reload-list')) { closeDetail(true); loadList(); }
+    else if (b.hasAttribute('data-reload-list')) loadList();   // 開いている請求が一覧から消えたら、書きかけを要確認へ移してから閉じる（loadList）
     else if (b.hasAttribute('data-reload-detail')) reloadDetail();
     else if (b.dataset.settleId) {
       var sid = b.dataset.settleId;
       if (S.openId === sid) { S.notice = { kind: 'unknown', text: '前の操作が保存できたかを確かめています…' }; renderDetail(); }
       runSettle(sid);
     }
+    else if (b.dataset.reopenWish) reopenWish(b.dataset.reopenWish, Number(b.dataset.idx));
     else if (b.dataset.dismissLost) { V.dismissLost(S.lost, b.dataset.dismissLost, Number(b.dataset.idx)); renderAttention(); if (S.openId) renderDetail(); }
     // 今のサインインで起動が済んでいれば一覧だけ、済んでいなければ起動から（A2 第2巡 指摘1）
     else if (b.hasAttribute('data-retry')) { if (S.user && S.ownerGen === S.authGen) loadList(); else start(); }
@@ -1033,7 +1201,6 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }, true);
 
   document.addEventListener('input', function (e) {
-    if (S.busy) return;                // 書き込みの間の入力は受け取らない（念のため）
     if (e.target.id === 'search') { S.query = e.target.value; renderMain(); }
     else if (e.target.id === 'memo') { S.draftMemo = e.target.value; $('#limit').textContent = e.target.value.length + ' / 5,000文字'; }
   });
@@ -1045,8 +1212,6 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   });
 
   document.addEventListener('keydown', function (e) {
-    // 書き込みの間はキーを一切通さない（Tab・文字入力を含む。inert が効かない古いブラウザへの備え）
-    if (S.busy) { e.preventDefault(); e.stopPropagation(); return; }
     if (e.key === 'Escape' && S.openId) closeDetail(false);
   }, true);
 
@@ -1054,7 +1219,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   document.addEventListener('dragstart', function (e) {
     var c = e.target.closest && e.target.closest('.invoice-card[draggable=true]');
     if (!c) return;
-    if (S.busy || fgInflight() > 0) { e.preventDefault(); toast('読み込みの途中です。終わってから、もう一度操作してください。', 'error'); perfRejected('drag'); return; }
+    if (!canWrite()) { e.preventDefault(); refuseWrite('drag'); return; }
     e.dataTransfer.setData('text/plain', c.dataset.open);
     e.dataTransfer.effectAllowed = 'move';
     c.classList.add('dragging');
@@ -1079,9 +1244,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (id) moveByDrag(id, lane.dataset.lane);
   });
 
-  // 書き込みの途中・未確定が残っている間にページを離れようとしたら確かめる
+  // 書き込みの途中・未確定が残っている間にページを離れようとしたら確かめる（書き込みの要求は keepalive で送り切る。段C §8-11-2 の8）
   window.addEventListener('beforeunload', function (e) {
-    if (S.busy || Object.keys(S.unsettled).length) { e.preventDefault(); e.returnValue = ''; }
+    if (S.write || Object.keys(S.unsettled).length) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // ---- 軽い計測（計画 ar-app-perf §3-3 L）----
@@ -1119,7 +1284,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     try {
       var ctx = perfScene('rejected');
       var iv = setInterval(function () {
-        if ((!S.busy && fgInflight() === 0 && !S.listBusy) || performance.now() - ctx.t0 > 60000) { clearInterval(iv); perfEnd(ctx, 'rejected', { action: kind }); }
+        if (canWrite() || performance.now() - ctx.t0 > 60000) { clearInterval(iv); perfEnd(ctx, 'rejected', { action: kind }); }
       }, 100);
     } catch (e) { /* 計測の失敗は無視 */ }
   }
@@ -1128,7 +1293,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   // 業務の通信が走っていないときに、今サインインしている人の行だけを送る。受け取られた行だけ端末から消す
   async function perfFlush() {
     var key = perfOwner();               // 今の資格情報の持ち主の行だけを、その資格情報で送る
-    if (P.sending || !S.token || !key || S.busy || S.inflight > 0 || S.listBusy) return;
+    if (P.sending || !S.token || !key || S.write || S.inflight > 0 || S.listBusy) return;
     var k = 'arPerfQ:' + key;
     var q = perfLoad(k);
     if (!q.length) return;
