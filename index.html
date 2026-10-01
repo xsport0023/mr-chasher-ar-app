@@ -40,6 +40,28 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .stat{min-height:103px;background:#fff;border:3px solid #1d1830;border-radius:21px;box-shadow:5px 6px 0 #1d1830;padding:17px 20px;display:flex;flex-direction:column;justify-content:space-between}
 .stat:nth-child(1){background:#ffdd65}.stat:nth-child(2){background:#c8baff}.stat:nth-child(3){background:#69dec5}
 .stat .name{font-size:13px;font-weight:850}.stat strong{font-size:27px;line-height:1.15;letter-spacing:-.04em}
+/* 成果表示（ar-app-outcome。見た目はユーザーのモック A案）: 数字の右に「前回から」の ＋・－ を独立に2行 */
+.stat.has-delta{display:grid;grid-template-columns:minmax(0,max-content) minmax(112px,1fr);grid-template-rows:auto 1fr;column-gap:16px;align-content:start;justify-content:stretch}
+.stat.has-delta .name{grid-column:1;grid-row:1;white-space:nowrap}.stat.has-delta strong{grid-column:1;grid-row:2;align-self:start;margin-top:6px;white-space:nowrap}
+.delta-lines{grid-column:2;grid-row:1 / 3;display:flex;flex-direction:column;gap:4px;align-self:start}
+.delta-head{font-size:11px;font-weight:900;color:#45405b;white-space:nowrap}
+.delta{display:inline-flex;justify-content:center;min-width:96px;border:1.5px solid #1d1830;border-radius:7px;padding:2px 6px;font-size:12px;font-weight:850;background:#fff;white-space:nowrap}
+.delta.plus{background:#f4eeff;color:#5b38a0}.delta.minus{background:#d8f8ec;color:#126d58}
+.compare-note{margin:-8px 1px 16px;font-size:11px;color:#5d5572}
+.achievement{width:100%;text-align:left;border:2.5px solid #1d1830;box-shadow:4px 5px 0 #1d1830;border-radius:19px;background:#ddf8ee;margin:0 0 18px;padding:14px 18px;display:flex;align-items:center;gap:17px;flex-wrap:wrap;cursor:pointer;font:inherit;color:inherit}
+.achievement:hover{transform:translate(1px,1px);box-shadow:3px 4px 0 #1d1830}
+.achievement .spark{height:44px;width:44px;display:grid;place-items:center;flex-shrink:0;background:#fff;border:2px solid #1d1830;border-radius:15px;font-size:23px}
+.achievement-copy{min-width:225px;flex:1}.achievement-copy small{font-size:11px;font-weight:900;color:#287160}
+.achievement-copy strong{display:block;font-size:18px;margin:3px 0}.achievement-copy span.sub{display:block;font-size:12px;color:#48685f}
+.achievement .toggle{border:2px solid #1d1830;border-radius:14px;background:#fff;box-shadow:3px 4px 0 #1d1830;padding:10px 14px;font-size:13px;font-weight:900;white-space:nowrap}
+.paid-area{border:2.5px solid #1d1830;border-radius:20px;background:#f2fcf8;box-shadow:4px 5px 0 #1d1830;padding:18px;margin:0 0 22px}
+.paid-area-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.paid-area-head h2{font-size:18px;margin:0}.paid-area-head p{font-size:12px;color:#43675e;margin:5px 0 0}
+.paid-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
+.paid-card{border:2px solid #1d1830;border-radius:15px;background:#fff;padding:13px 15px;box-shadow:2px 3px 0 #1d1830}
+.paid-card .check{color:#137560;font-weight:900;font-size:12px}.paid-card h3{font-size:14px;margin:9px 0 4px}
+.paid-card h3 small{font-size:11px;color:#655b80;font-weight:700}.paid-card strong{font-size:23px;letter-spacing:-.04em}
+.paid-card p{font-size:11px;color:#5b5470;margin:7px 0 0}
 .section-head{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:18px 0 12px}
 .section-head h2{font-size:21px;margin:0}.section-head p{font-size:12px;color:#696176;margin:4px 0 0}
 .tabs{display:flex;gap:9px;flex-wrap:wrap}
@@ -140,10 +162,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   .filters{gap:9px;padding:12px;box-shadow:3px 4px 0 #1d1830}.filters label{flex:1;min-width:125px}
   .filters .search{flex-basis:100%}.filters .hint{width:100%;margin:0}.control{width:100%}
   .list{grid-template-columns:1fr}.lane{min-height:auto}
+  .stat.has-delta{grid-template-columns:1fr;grid-template-rows:auto auto auto}.delta-lines{grid-column:1;grid-row:3;margin-top:6px}.delta{min-width:0}
+  .paid-list{grid-template-columns:1fr}.achievement .toggle{width:100%;text-align:center}
   .overlay{padding:8px;place-items:stretch}.detail-panel{max-height:calc(100dvh - 16px)}
   .detail-columns{grid-template-columns:1fr}.detail-header{padding:16px}.detail-body{padding:16px}.state-screen{padding:22px}
 }
-@media(min-width:761px) and (max-width:1000px){.list{grid-template-columns:repeat(2,minmax(0,1fr))}} /* 4列では狭すぎる幅は2列×2段（§6-13） */
+@media(min-width:761px) and (max-width:1000px){.list{grid-template-columns:repeat(2,minmax(0,1fr))}.paid-list{grid-template-columns:repeat(2,minmax(0,1fr))}} /* 4列では狭すぎる幅は2列×2段（§6-13） */
 @media(max-width:390px){.stat strong{font-size:15px}.button.small{padding:6px 8px}.session{gap:7px}.section-head h2{font-size:18px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
@@ -167,10 +191,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 
   <main id="main" hidden>
     <section class="summary" aria-label="現在の表示条件の集計">
-      <div class="stat"><span class="name">表示中の請求</span><strong id="stat-count"></strong></div>
-      <div class="stat"><span class="name">表示分の請求額</span><strong id="stat-total"></strong></div>
-      <div class="stat"><span class="name">未連絡（表示分）</span><strong id="stat-untouched"></strong></div>
+      <div class="stat" id="stat-box-count"><span class="name">表示中の請求</span><strong id="stat-count"></strong><div class="delta-lines" id="delta-count" hidden></div></div>
+      <div class="stat" id="stat-box-total"><span class="name">表示分の請求額</span><strong id="stat-total"></strong><div class="delta-lines" id="delta-total" hidden></div></div>
+      <div class="stat" id="stat-box-untouched"><span class="name">未連絡（表示分）</span><strong id="stat-untouched"></strong><div class="delta-lines" id="delta-untouched" hidden></div></div>
     </section>
+    <p class="compare-note" id="compare-note" hidden></p>
+    <div id="outcome"></div>
     <div class="section-head">
       <div><h2>請求を確認する</h2><p>連絡状況とメモを、請求ごとに記録できます。<span id="drag-hint"></span></p></div>
       <div class="tabs" role="tablist" aria-label="請求の種類">
@@ -181,7 +207,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     <div class="filters">
       <label>経過日数<select class="control" id="days"><option value="0">すべて（期日前を含む）</option><option value="1" selected>1日以上（期日を過ぎたもの）</option><option value="30">30日以上</option><option value="60">60日以上</option><option value="90">90日以上</option></select></label>
       <label class="search">取引先名・件名・請求番号・メモを検索<input class="control" id="search" type="search" placeholder="例：サンプル" autocomplete="off"></label>
-      <label>並び順<select class="control" id="sort"><option value="age">経過日数の多い順</option><option value="amount">請求額の多い順</option><option value="client">取引先名順</option></select></label>
+      <label>並び順<select class="control" id="sort"><option value="age">経過日数の多い順</option><option value="age_asc">経過日数の少ない順</option><option value="amount">請求額の多い順</option><option value="client">取引先名順</option></select></label>
       <button type="button" class="button small ghost" data-refresh id="refresh">↻ 更新</button>
       <span class="move-bar" id="move-bar" role="status"></span>
       <span class="hint">最終取得：<span id="last-fetch">—</span></span>
@@ -216,6 +242,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     screen: 'signin',     // signin / config / loading / error / denied / main
     screenMessage: '', deniedSub: '',
     tabs: null, fetchedAt: '', warnings: [], listBusy: false,
+    // 成果表示（ar-app-outcome §3-3）: 今表示している一覧の札（snapId）、outcome の応答（その札のものだけ）、「入金で解消」を開いているか
+    snapId: null, outcome: null, paidOpen: false,
     tab: '未入金', days: 1, query: '', sort: 'age',
     openId: null, openPartner: '', detailGen: 0,
     detail: null,         // { loading, records, error }
@@ -575,6 +603,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.detailGen++;
     S.tabs = null; S.fetchedAt = ''; S.warnings = [];
+    S.snapId = null; S.outcome = null; S.paidOpen = false; $('#outcome').innerHTML = '';
     $('#detail').innerHTML = '';
     $('#list').innerHTML = '';
     $('#attention').innerHTML = '';
@@ -621,6 +650,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (!MOCK && window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     parkMoves();
     S.token = null; S.user = null; S.tabs = null; S.authGen++; closeDetail(true);
+    S.snapId = null; S.outcome = null; S.paidOpen = false; $('#outcome').innerHTML = '';
     showScreen('signin', 'サインアウトしました。');
   }
 
@@ -724,6 +754,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       S.tabs = r.json.tabs;
       S.fetchedAt = r.json.fetchedAt;
       S.warnings = r.json.warnings || [];
+      // 成果表示: 描いた一覧の控えを裏で送る。fetchedAtMs の無い古いサーバ（@6）には送らない（§3-3・O-G2 ⑫）
+      S.outcome = null; S.snapId = null;
+      if (typeof r.json.fetchedAtMs === 'number') { S.snapId = newOpId(); sendOutcome(V.snapshotOf(S.tabs, r.json.fetchedAtMs), S.snapId, g); }
       if (!boot && r.json.user) applyStaff(r.json, false);   // 取り直しでも担当の対応を見直す（サーバを戻したとき、担当を出さない）
       // ★ 未確定（unsettled）・保存されなかったメモ（lost）は取り直しでは外さない。一覧から消えても「要確認」に残る
       if (openId && S.openId === openId && !findCard(openId)) {
@@ -794,6 +827,71 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     $('#refresh').disabled = S.listBusy || !!S.write || movesPending();   // 保存中・移動の保存待ちは一覧を取り直さない（段C §8-11-2 の7・段D §9-3 の9）
     renderMoveBar();
     renderAttention();
+    renderOutcome();
+  }
+
+  // ---- 成果表示（ar-app-outcome §3-3。見た目はモック A案） ----
+  // outcome は裏の通信（bg）。前景に数えないので、保存・ドラッグ・詳細の保存・更新・サインアウトを止めない。
+  // 応答を使うのは、サインインの世代と、今表示している一覧の札（snapId）が同じときだけ（古い応答を捨てる。O-G2 ⑥）
+  async function sendOutcome(snapshot, snapId, g) {
+    if (snapshot.i.length > V.SNAP_MAX_ITEMS) { S.outcome = { tooMany: true }; if (S.screen === 'main') renderOutcome(); return; }
+    var ctx = perfScene('outcome');
+    var body = { snapshot: snapshot, snapId: snapId };
+    var r = await api('outcome', body, { bg: true, ctx: ctx });
+    if (g === S.authGen && snapId === S.snapId && (r.kind === 'broken' || r.kind === 'timeout' || r.kind === 'network')) {
+      r = await api('outcome', body, { bg: true, ctx: ctx, retry: 1 });   // 1回だけ送り直す（同じ控え・同じ札。サーバは STALE で二重に書かない）
+    }
+    perfEnd(ctx, r.kind === 'ok' && r.json.paidUnknown ? 'unknown' : V.perfResult(r));
+    if (g !== S.authGen || snapId !== S.snapId) return;
+    if (r.kind === 'ok' && r.json.snapId === snapId) S.outcome = r.json;
+    else S.outcome = r.kind === 'fail' && r.code === 'TOO_LARGE' ? { tooLarge: true } : null;   // そのほかの失敗は何も出さない（§3-3）
+    if (S.screen === 'main') renderOutcome();
+  }
+
+  function cardsById() {
+    var m = {};
+    allCards().forEach(function (c) { m[c.billingId] = c; });
+    return m;
+  }
+
+  function renderOutcome() {
+    if (!S.tabs) return;
+    var o = S.outcome;
+    var view = o && o.ok ? V.outcomeView(o, S.tab, S.features ? S.staffSel : V.ALL_STAFF, S.staff, cardsById()) : null;
+    var boxes = [['count', false], ['total', true], ['untouched', false]];
+    boxes.forEach(function (b) {
+      var el = $('#delta-' + b[0]);
+      $('#stat-box-' + b[0]).classList.toggle('has-delta', !!view);
+      el.hidden = !view;
+      if (!view) { el.innerHTML = ''; return; }
+      var key = b[0] === 'total' ? 'amount' : b[0];
+      el.innerHTML = '<span class="delta-head">前回から</span>' +
+        '<span class="delta plus">' + esc(V.deltaText('＋', view.plus[key], b[1])) + '</span>' +
+        '<span class="delta minus">' + esc(V.deltaText('−', view.minus[key], b[1])) + '</span>';
+    });
+    var note = $('#compare-note');
+    var text = o && o.tooLarge ? '前回の控えが大きすぎて保存できませんでした。' :
+      o && o.tooMany ? '一覧が ' + V.SNAP_MAX_ITEMS.toLocaleString('ja-JP') + '件を超えたため、前回からの増減を出せません。管理者に連絡してください。' :
+      o && o.ok ? V.outcomeNote(o) : '';
+    note.hidden = !text;
+    note.textContent = text;
+    var area = $('#outcome');
+    if (!view || view.paidUnknown || !view.paid.length) { area.innerHTML = ''; return; }
+    var open = S.paidOpen;
+    area.innerHTML =
+      '<button type="button" class="achievement" data-paid-toggle aria-expanded="' + open + '" aria-controls="paid-area">' +
+        '<span class="spark" aria-hidden="true">✦</span>' +
+        '<span class="achievement-copy"><small>前回からの成果</small><strong>入金で解消 ' + view.paid.length + '件 · ' + esc(V.yen(view.paidTotal)) + '</strong>' +
+        '<span class="sub">未入金一覧から消えた案件を、成果として確認できます。</span></span>' +
+        '<span class="toggle">' + (open ? '表示中 · 閉じる ↑' : '入金された案件を見る ↓') + '</span></button>' +
+      (open ? '<section class="paid-area" id="paid-area" aria-label="入金で解消した案件"><div class="paid-area-head"><div><h2>✦ 入金で解消した案件</h2>' +
+        '<p>前回から入金が確認され、未入金一覧から外れました。</p></div><button type="button" class="button small ghost" data-paid-toggle>閉じる ↑</button></div>' +
+        '<div class="paid-list">' + view.paid.map(function (x) {
+          // 入金済みのカードは開かない・ドラッグしない（UI-2）。時刻は出さない（UI-4）
+          return '<article class="paid-card"><span class="check">✓ 入金を確認</span><h3>' + esc(x.partner) +
+            (x.billingNumber ? ' <small>No.' + esc(x.billingNumber) + '</small>' : '') + '</h3><strong>' + esc(V.yen(x.amount)) + '</strong>' +
+            (S.features ? '<p>' + esc(V.assigneeLabel(S.staff, x.assignee || '')) + '</p>' : '') + '</article>';
+        }).join('') + '</div></section>' : '');
   }
 
   // 「要確認」: 確定できていない操作と、保存されなかったメモ。一覧とは別に置く（請求が一覧から消えても取り出せる。W5 第3巡 指摘2）
@@ -1360,6 +1458,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     else if (b.hasAttribute('data-assignee')) { S.draftAssignee = b.dataset.assignee; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-save')) save();
     else if (b.hasAttribute('data-refresh')) loadList();
+    else if (b.hasAttribute('data-paid-toggle')) { S.paidOpen = !S.paidOpen; renderOutcome(); }   // 「入金で解消」の行全体で開閉（UI-1）
     else if (b.hasAttribute('data-move-now')) kickMoves('now');   // 3秒を待たずに送り出す・止まった送り出しを続ける（段D §9-3 の4・6）
     else if (b.hasAttribute('data-reload-list')) loadList();   // 開いている請求が一覧から消えたら、書きかけを要確認へ移してから閉じる（loadList）
     else if (b.hasAttribute('data-reload-detail')) reloadDetail();

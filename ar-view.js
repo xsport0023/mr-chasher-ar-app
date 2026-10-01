@@ -145,15 +145,21 @@
     return order.sort(function (x, y) { return y - x; }).map(function (id) { return byId[id]; });
   }
 
-  // 並び順: 経過日数の多い順（日数不明は最後）／請求額の多い順／取引先名順。同じなら請求番号順
+  // 並び順: 経過日数の多い順／経過日数の少ない順（期日前の負の日数が先。ar-app-outcome 段1）／請求額の多い順／取引先名順。
+  // 日数不明はどちらの日数順でも最後。同じなら請求番号順
   function sortCards(cards, sort) {
     var byNumber = function (a, b) { return String(a.billingNumber).localeCompare(String(b.billingNumber), 'ja', { numeric: true }); };
+    var unknown = function (c) { return c.days === null || c.days === undefined; };
     var cmp;
     if (sort === 'amount') cmp = function (a, b) { return (b.amount || 0) - (a.amount || 0); };
     else if (sort === 'client') cmp = function (a, b) { return String(a.partner).localeCompare(String(b.partner), 'ja'); };
+    else if (sort === 'age_asc') cmp = function (a, b) {
+      if (unknown(a) || unknown(b)) return unknown(a) === unknown(b) ? 0 : (unknown(a) ? 1 : -1);
+      return a.days - b.days;
+    };
     else cmp = function (a, b) {
-      var da = a.days === null || a.days === undefined ? -Infinity : a.days;
-      var db = b.days === null || b.days === undefined ? -Infinity : b.days;
+      var da = unknown(a) ? -Infinity : a.days;
+      var db = unknown(b) ? -Infinity : b.days;
       return da === db ? 0 : (db > da ? 1 : -1);
     };
     return (cards || []).slice().sort(function (a, b) { return cmp(a, b) || byNumber(a, b); });
@@ -498,7 +504,7 @@
   }
 
   // 応答の perf から、計測の行に写すサーバの時間（許可した欄だけ）
-  var PERF_SERVER_FIELDS = ['tokenMs', 'tokenCached', 'usersMs', 'mfMs', 'recordsMs', 'mfGetOneMs'];
+  var PERF_SERVER_FIELDS = ['tokenMs', 'tokenCached', 'usersMs', 'mfMs', 'recordsMs', 'mfGetOneMs', 'lockMs'];   // lockMs は成果表示 ar-app-outcome §3-2
   function perfServerFields(json) {
     var out = {};
     if (!json) return out;
@@ -508,6 +514,62 @@
       if (k === 'tokenCached' ? typeof p[k] === 'boolean' : typeof p[k] === 'number') out[k] = p[k];
     });
     return out;
+  }
+
+  // ---- 成果表示（plan_id = ar-app-outcome。計画 §3-2・§3-3） ----
+  var OUTCOME_TABS = ['未入金', '未設定'];
+  var SNAP_MAX_ITEMS = 1000;   // サーバの AR_SNAP_MAX_ITEMS と同じ。超えたら送らずに知らせる（実装レビュー第1巡 指摘3）
+
+  // 描いた一覧から控えを作る（サーバの arSnapshotOf_ と同じ形。共通の印は付けない）
+  function snapshotOf(tabs, fetchedAtMs) {
+    var items = [];
+    OUTCOME_TABS.forEach(function (tab, t) {
+      ((tabs && tabs[tab]) || []).forEach(function (c) {
+        items.push([c.billingId, t, Math.round(Number(c.amount) || 0), c.status === 'ノータッチ' ? 1 : 0]);
+      });
+    });
+    return { f: fetchedAtMs, i: items };
+  }
+
+  // outcome の応答から、表示中のタブ・担当の選択での増減と「入金で解消」を出す。経過日数・検索は使わない（Q3）。
+  // 担当は、今の一覧にある請求は今のカードの担当、入金で消えた請求はサーバが返した今の担当で見る。
+  // cardsById は今の一覧（両タブ）の請求ID → カード。今の一覧に無い「新しく出てきた」請求は数えない（取り直しで消えたもの）
+  function outcomeView(o, tab, staffSel, staffList, cardsById) {
+    if (!o || !o.ok || o.baseAt === null || o.baseAt === undefined) return null;
+    var mine = function (card) { return !!card && passesStaff(card, staffSel, staffList); };
+    var added = (o.added || []).filter(function (x) { return x.tab === tab && mine(cardsById[x.id]); });
+    var contacted = (o.contacted || []).filter(function (x) { return x.tab === tab && mine(cardsById[x.id]); });
+    var paidAll = o.paidUnknown ? [] : (o.paid || []).filter(function (p) { return mine({ assignee: p.assignee || '' }); });
+    var paidTab = paidAll.filter(function (p) { return p.tab === tab; });
+    var sum = function (xs) { return xs.reduce(function (a, x) { return a + (x.amount || 0); }, 0); };
+    // 入金か確かめられなかった（PAID_UNKNOWN）ときは、入金の － を出さない（null）。連絡で動かした未連絡の － だけ出す（§3-3）
+    var minus = o.paidUnknown ? { count: null, amount: null, untouched: contacted.length } : {
+      count: paidTab.length, amount: sum(paidTab),
+      untouched: contacted.length + paidTab.filter(function (p) { return p.untouched; }).length
+    };
+    return {
+      plus: { count: added.length, amount: sum(added), untouched: added.filter(function (x) { return x.untouched; }).length },
+      minus: minus,
+      paid: paidAll, paidTotal: sum(paidAll), paidUnknown: !!o.paidUnknown
+    };
+  }
+
+  // ミリ秒 → 日本時間の「9/30 17:42」
+  function jpDateTime(ms) {
+    var s = new Date(ms + 9 * 60 * 60 * 1000).toISOString();
+    return Number(s.slice(5, 7)) + '/' + Number(s.slice(8, 10)) + ' ' + s.slice(11, 16);
+  }
+
+  // 比べた時点の注記（UI-3。共通の控えは公開の時点。§3-7）
+  function outcomeNote(o) {
+    if (!o || !o.ok) return '';
+    if (o.baseAt === null || o.baseAt === undefined) return '前回の記録がありません。次に開いたときから表示します。';
+    return '前回（' + (o.common ? '公開の時点 ' : '') + jpDateTime(o.baseAt) + '）の一覧と比べています。日付が変わるまで同じ時点と比べます。タブと担当で比べ、経過日数・検索には関係しません。';
+  }
+
+  function deltaText(sign, v, money) {
+    if (v === null || v === undefined) return sign + '—';
+    return sign + (money ? yen(v) : v + '件');
   }
 
   // 端末の待ち行列（持ち主ごと）。上限と期限を超えた古い行を捨て、捨てた数を返す
@@ -545,7 +607,8 @@
     wishOf: wishOf, draftWish: draftWish, wishEmpty: wishEmpty, wishLines: wishLines, addWish: addWish,
     partnerAssigneeLocked: partnerAssigneeLocked, moveAdd: moveAdd, moveTake: moveTake, moveOutcome: moveOutcome, moveSummary: moveSummary, fetchInit: fetchInit, KEEPALIVE_MAX_BYTES: KEEPALIVE_MAX_BYTES,
     mergeRecords: mergeRecords, newerState: newerState, perfResult: perfResult, perfServerFields: perfServerFields,
-    perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX
+    perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX,
+    snapshotOf: snapshotOf, outcomeView: outcomeView, outcomeNote: outcomeNote, jpDateTime: jpDateTime, deltaText: deltaText, SNAP_MAX_ITEMS: SNAP_MAX_ITEMS
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;
