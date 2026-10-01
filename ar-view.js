@@ -608,7 +608,8 @@
     partnerAssigneeLocked: partnerAssigneeLocked, moveAdd: moveAdd, moveTake: moveTake, moveOutcome: moveOutcome, moveSummary: moveSummary, fetchInit: fetchInit, KEEPALIVE_MAX_BYTES: KEEPALIVE_MAX_BYTES,
     mergeRecords: mergeRecords, newerState: newerState, perfResult: perfResult, perfServerFields: perfServerFields,
     perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX,
-    snapshotOf: snapshotOf, outcomeView: outcomeView, outcomeNote: outcomeNote, jpDateTime: jpDateTime, deltaText: deltaText, SNAP_MAX_ITEMS: SNAP_MAX_ITEMS
+    snapshotOf: snapshotOf, outcomeView: outcomeView, outcomeNote: outcomeNote, jpDateTime: jpDateTime, deltaText: deltaText, SNAP_MAX_ITEMS: SNAP_MAX_ITEMS,
+    VERSION: '2026-10-01.outcome.2'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-01）
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;

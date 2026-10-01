@@ -43,10 +43,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 /* 成果表示（ar-app-outcome。見た目はユーザーのモック A案）: 数字の右に「前回から」の ＋・－ を独立に2行 */
 .stat.has-delta{display:grid;grid-template-columns:minmax(0,max-content) minmax(112px,1fr);grid-template-rows:auto 1fr;column-gap:16px;align-content:start;justify-content:stretch}
 .stat.has-delta .name{grid-column:1;grid-row:1;white-space:nowrap}.stat.has-delta strong{grid-column:1;grid-row:2;align-self:start;margin-top:6px;white-space:nowrap}
-.delta-lines{grid-column:2;grid-row:1 / 3;display:flex;flex-direction:column;gap:4px;align-self:start}
+.delta-lines{grid-column:2;grid-row:1 / 3;display:flex;flex-direction:column;align-items:flex-start;gap:4px;align-self:start} /* 札は横いっぱいに伸ばさない（モック A案。2026-10-01 ユーザーの指摘） */
 .delta-head{font-size:11px;font-weight:900;color:#45405b;white-space:nowrap}
 .delta{display:inline-flex;justify-content:center;min-width:96px;border:1.5px solid #1d1830;border-radius:7px;padding:2px 6px;font-size:12px;font-weight:850;background:#fff;white-space:nowrap}
-.delta.plus{background:#f4eeff;color:#5b38a0}.delta.minus{background:#d8f8ec;color:#126d58}
+#stat-box-total .delta{min-width:110px}.delta.plus{background:#f4eeff;color:#5b38a0}.delta.minus{background:#d8f8ec;color:#126d58}
 .compare-note{margin:-8px 1px 16px;font-size:11px;color:#5d5572}
 .achievement{width:100%;text-align:left;border:2.5px solid #1d1830;box-shadow:4px 5px 0 #1d1830;border-radius:19px;background:#ddf8ee;margin:0 0 18px;padding:14px 18px;display:flex;align-items:center;gap:17px;flex-wrap:wrap;cursor:pointer;font:inherit;color:inherit}
 .achievement:hover{transform:translate(1px,1px);box-shadow:3px 4px 0 #1d1830}
@@ -172,7 +172,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 <script src="config.js"></script>
-<script src="ar-view.js"></script>
+<script src="ar-view.js?v=2026-10-01.outcome.2"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
 </head>
 <body>
 <div class="app">
@@ -227,6 +227,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   'use strict';
   var C = window.AR_CONFIG;
   var V = window.ArView;
+  var VIEW_VERSION = '2026-10-01.outcome.2';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
   var MOCK = new URLSearchParams(location.search).get('mock') === '1';
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (v) { return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -756,7 +757,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       S.warnings = r.json.warnings || [];
       // 成果表示: 描いた一覧の控えを裏で送る。fetchedAtMs の無い古いサーバ（@6）には送らない（§3-3・O-G2 ⑫）
       S.outcome = null; S.snapId = null;
-      if (typeof r.json.fetchedAtMs === 'number') { S.snapId = newOpId(); sendOutcome(V.snapshotOf(S.tabs, r.json.fetchedAtMs), S.snapId, g); }
+      try {   // 成果の通信を始められなくても、一覧の表示は止めない（成果を出さないだけ）
+        if (typeof r.json.fetchedAtMs === 'number') { S.snapId = newOpId(); sendOutcome(V.snapshotOf(S.tabs, r.json.fetchedAtMs), S.snapId, g).catch(function (x) { console.error(x); }); }   // 通信の後の失敗も記録する（成果が出ないだけ）
+      } catch (x) { console.error(x); S.snapId = null; S.outcome = null; }
       if (!boot && r.json.user) applyStaff(r.json, false);   // 取り直しでも担当の対応を見直す（サーバを戻したとき、担当を出さない）
       // ★ 未確定（unsettled）・保存されなかったメモ（lost）は取り直しでは外さない。一覧から消えても「要確認」に残る
       if (openId && S.openId === openId && !findCard(openId)) {
@@ -792,6 +795,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var screens = {
       signin: ['✦', 'サインイン', S.screenMessage || '許可されたメンバーが利用できます。Google アカウントでサインインしてください。', '<div id="gsi-slot"></div>'],
       config: ['!', '接続先が設定されていません', 'この画面の接続先（config.js の GAS_URL）がまだ空です。管理者に連絡してください。', ''],
+      stale: ['!', '画面のファイルが古いままです', 'ブラウザに前の版のファイルが残っています。Ctrl＋Shift＋R（スマートフォンはページを閉じて開き直す）で読み込み直してください。', ''],
       loading: ['◌', '請求を読み込み中', '一覧を取得しています。少々お待ちください。', '<span class="spinner" aria-label="読み込み中">◌</span>'],
       error: ['!', '一覧を取得できませんでした', esc(S.screenMessage) + '。通信状態を確認して、もう一度お試しください。', '<button type="button" class="button primary" data-retry>再試行</button>'],
       denied: ['×', 'アクセスできません', 'このアカウントは利用を許可されていません。管理者に次の識別子を伝えてください。',
@@ -827,7 +831,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     $('#refresh').disabled = S.listBusy || !!S.write || movesPending();   // 保存中・移動の保存待ちは一覧を取り直さない（段C §8-11-2 の7・段D §9-3 の9）
     renderMoveBar();
     renderAttention();
-    renderOutcome();
+    try { renderOutcome(); } catch (x) { console.error(x); }   // 成果の描画の失敗で、一覧の描画を止めない
   }
 
   // ---- 成果表示（ar-app-outcome §3-3。見た目はモック A案） ----
@@ -1604,6 +1608,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   setInterval(perfFlush, 20000);
 
   // ---- 起動 ----
+  if (!V || V.VERSION !== VIEW_VERSION) { showScreen('stale'); return; }   // 新旧のファイルが混ざったら、止まる前に知らせる
   if (!C.GAS_URL && !MOCK) { showScreen('config'); return; }
   if (!MOCK) {
     var s = document.createElement('script');
