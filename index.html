@@ -124,6 +124,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .detail-meta{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .detail-meta .amount{font-size:24px;margin-right:auto}
 .detail-meta .pill{padding:5px 9px;box-shadow:none;font-size:11px;font-weight:850}
+/* 督促文のコピー（督促の支援 段2、計画 ar-app-dunning §3-2-5）。帯の中で折り返す。知らせ・理由は帯のすぐ下の専用の1行 */
+.detail-meta .dunning-btn{padding:5px 9px;font-size:11px}
+.dunning-line{margin-top:8px;font-size:12px;font-weight:800;color:#206f5d;overflow-wrap:anywhere}
+.dunning-line.muted{color:#665e76;font-weight:700}.dunning-line.error{color:#a3203a}
 .detail-body{padding:22px}.detail-body h3{margin:0 0 10px;font-size:15px}
 .status-choices{display:flex;flex-wrap:wrap;gap:9px}
 .choice{border:2px solid #1d1830;border-radius:13px;padding:9px 11px;font-size:12px;font-weight:900;background:#fff;box-shadow:2px 3px 0 #1d1830}
@@ -174,7 +178,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 <script src="config.js"></script>
-<script src="ar-view.js?v=2026-10-03.dunning.2"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
+<script src="ar-view.js?v=2026-10-03.dunning.3"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
 </head>
 <body>
 <div class="app">
@@ -229,7 +233,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   'use strict';
   var C = window.AR_CONFIG;
   var V = window.ArView;
-  var VIEW_VERSION = '2026-10-03.dunning.2';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
+  var VIEW_VERSION = '2026-10-03.dunning.3';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
   var MOCK = new URLSearchParams(location.search).get('mock') === '1';
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (v) { return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -247,6 +251,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     tabs: null, fetchedAt: '', warnings: [], listBusy: false,
     // 成果表示（ar-app-outcome §3-3）: 今表示している一覧の札（snapId）、outcome の応答（その札のものだけ）、「入金で解消」を開いているか
     snapId: null, outcome: null, paidOpen: false,
+    // 督促文のコピー（督促の支援 段2 §3-2-5）。dunning: 文面（一覧の応答の dunningTemplates）。
+    // dunningMsg: 帯の下の専用の1行 { id, openSeq, kind, text, tone }（S.notice・toast は使わない）。
+    // dunningFail: コピーできなかったときの手で写す欄 { id, kind, text, fetchedAt, sig, stale, needSelect }。
+    // copyInFlight: 実際のコピー（writeText の Promise）が終わるまでの印。終わったときにだけ外す（時間では外さない）。
+    // openSeq: 詳細を開く・閉じる・表示を消すで1つ進む（読み直しでは進まない）。copySeq: コピーの番号
+    dunning: [], dunningMsg: null, dunningFail: null, copyInFlight: null, openSeq: 0, copySeq: 0,
     tab: '未入金', days: 1, query: '', sort: 'age',
     openId: null, openPartner: '', detailGen: 0,
     detail: null,         // { loading, records, error }
@@ -423,6 +433,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (S.screen === 'main') renderMain();
     if (S.openId) renderDetail();
     restoreUI(ui);
+    selectDunningFail();   // 督促文の手で写す欄は、作った最初の1回だけ選ぶ（描き直しのフォーカスの戻しの後）
     checkReady();
   }
   // 操作（保存・移動）を受け付けたときに、希望の全項目と持ち主を写して持つ（§8-13-1 の1）
@@ -605,6 +616,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     }
     S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.detailGen++;
+    resetDunningView();   // 督促文の知らせと失敗の欄を片付ける（進行中のコピーの印は、実際のコピーが終わるまで残す）
     S.tabs = null; S.fetchedAt = ''; S.warnings = [];
     S.snapId = null; S.outcome = null; S.paidOpen = false; $('#outcome').innerHTML = '';
     $('#detail').innerHTML = '';
@@ -757,6 +769,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       S.tabs = r.json.tabs;
       S.fetchedAt = r.json.fetchedAt;
       S.warnings = r.json.warnings || [];
+      S.dunning = V.dunningTemplatesOf(r.json, S.dunning);   // 読み失敗は前の文面を保ち、旧サーバ（欄なし）なら空（§3-2-5）
       // 成果表示: 描いた一覧の控えを裏で送る。fetchedAtMs の無い古いサーバ（@6）には送らない（§3-3・O-G2 ⑫）
       S.outcome = null; S.snapId = null;
       try {   // 成果の通信を始められなくても、一覧の表示は止めない（成果を出さないだけ）
@@ -975,6 +988,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var card = findCard(id);
     if (!card) return;
     S.openId = id; S.openPartner = card.partner; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null; S.notice = null;
+    resetDunningView();
     S.detail = { loading: true, records: [] };
     var gen = ++S.detailGen;
     var ctx = has(S.unsettled, id) ? null : perfScene('detail');
@@ -1036,6 +1050,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     // 保存されなかったメモは S.lost・S.unsettled が持っているので、閉じても要確認に残る（知らせには持たせていない）
     S.openId = null; S.detail = null; S.notice = null; S.draftStatus = null; S.draftMemo = null; S.draftAssignee = null;
     S.detailGen++;
+    resetDunningView();
     $('#detail').innerHTML = '';
     document.body.style.overflow = '';
     checkReady();                      // 押せる前に閉じた詳細の計測の行を残す（段C C2 R1）
@@ -1071,14 +1086,16 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var lines = V.detailLines(d.records, S.features && !d.partnerMismatch ? d.assigneeHistory : [], S.staff).map(function (h) { return '<div class="history-item"><small>' + esc(h.when) + ' ・ ' + esc(h.who) + '</small><strong>' + esc(h.content) + '</strong></div>'; }).join('');
     var hist = d.loading ? lines + '<div class="history-item">読み込み中…</div>' : (lines || '<div class="history-item">記録はまだありません</div>');
     if (d.error) hist = '<div class="history-item">記録を読めませんでした（' + esc(d.error) + '）。<button type="button" class="button small ghost" data-reload-detail>読み直す</button></div>' + hist;
+    var failBox = dunningFailHTML(card);   // 帯の下の1行より先に求める（作れなくなった欄を片付けてから1行を決める）
     $('#detail').innerHTML =
       '<div class="overlay" data-overlay><article class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title" tabindex="-1">' +
       '<header class="detail-header"><div class="detail-header-top"><span class="eyebrow">請求の詳細 · 請求番号 ' + esc(card.billingNumber) + '</span>' +
       '<button class="button small ghost" type="button" data-close>✕ 閉じる</button></div>' +
       '<h2 id="detail-title">' + esc(card.partner) + '</h2><div class="subject">' + esc(card.title) + '</div>' +
-      '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong><span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
-      '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(shownStatus(card)) + (writing ? '<span class="pill">保存中</span>' : moveWait ? '<span class="pill">保存待ち</span>' : '') + '</div></header>' +
-      '<div class="detail-body">' + noticeHTML() + lostBoxHTML() +
+      '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong>' + dunningButtonsHTML(card) + '<span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
+      '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(shownStatus(card)) + (writing ? '<span class="pill">保存中</span>' : moveWait ? '<span class="pill">保存待ち</span>' : '') + '</div>' +
+      dunningLineHTML(card) + '</header>' +
+      '<div class="detail-body">' + noticeHTML() + failBox + lostBoxHTML() +
       // 左に連絡状況とメモ、右に担当と記録。左右の先頭をそろえる（ユーザー依頼 2026-09-27）
       '<div class="detail-columns"><section><h3>連絡状況を選ぶ</h3><div class="status-choices" role="group" aria-label="連絡状況" style="margin-bottom:16px">' + choices + '</div>' +
       '<h3>メモ <small style="font-weight:500">（上書き）</small></h3>' +
@@ -1174,6 +1191,133 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     list.push(btn('', '未割り当て', plock));
     return head + (plock ? '<p class="assignee-note">同じ取引先の担当を保存中・確認中のため、担当は変えられません。連絡状況・メモは保存できます。</p>' : '') +
       '<div class="status-choices assignee-choices" role="group" aria-label="この取引先の担当" style="margin-bottom:16px">' + list.join('') + '</div>';
+  }
+
+  // ---- 督促文のコピー（督促の支援 段2、計画 ar-app-dunning §3-2-5） ----
+  // 文面は「督促文」シート（一覧の応答の dunningTemplates）。押すと開いている請求の値を差し込んだ全文をクリップボードへ。
+  // コピーは1件ずつ（S.copyInFlight）。結果は、押したときの請求ID・サインインの世代・開いた回・コピーの番号が今と同じときだけ出す
+  function dunningTemplate(kind) { return S.dunning.filter(function (t) { return t.kind === kind; })[0] || null; }
+
+  // 帯の督促文のボタン（文面の種類ごと。文面が無ければ出さない＝旧サーバ・シートが無い）
+  function dunningButtonsHTML(card) {
+    if (!S.dunning.length) return '';
+    var block = V.dunningBlock(card);
+    return S.dunning.map(function (t) {
+      var title = block || (S.copyInFlight ? 'コピーしています' : '督促文（' + t.kind + '）を、この請求の値を差し込んでコピーします');
+      return '<button type="button" class="button small ghost dunning-btn" data-dunning="' + esc(t.kind) + '" data-ui-key="dun:btn:' + esc(t.kind) + '" title="' + esc(title) + '"' +
+        (block || S.copyInFlight ? ' disabled' : '') + '>督促文（' + esc(t.kind) + '）</button>';
+    }).join('');
+  }
+
+  // 帯のすぐ下の専用の1行: この詳細のコピーの知らせ、無ければ押せない理由
+  function dunningLineHTML(card) {
+    if (!S.dunning.length) return '';
+    var m = S.dunningMsg;
+    var f = S.dunningFail;
+    // 失敗の知らせは、手で写す欄に文面が残っている間だけ出す（欄を片付けた・古くなったら、押せない理由に戻す）
+    if (m && m.fail && !(f && f.id === m.id && f.kind === m.kind && !f.stale)) m = null;
+    if (m && m.id === S.openId && m.openSeq === S.openSeq) return '<div class="dunning-line' + (m.tone ? ' ' + m.tone : '') + '" role="status">' + esc(m.text) + '</div>';
+    var block = V.dunningBlock(card);
+    return block ? '<div class="dunning-line muted">督促文: ' + esc(block) + '</div>' : '';
+  }
+
+  // コピーできなかったときの手で写す欄。描くたびに今のカードと文面で照らし直す（§3-2-5 の①〜④）
+  function dunningFailHTML(card) {
+    var f = S.dunningFail;
+    var t = f ? dunningTemplate(f.kind) : null;
+    var st = V.dunningBoxState(f, card, t ? t.text : null);
+    if (st === 'clear') { S.dunningFail = null; return ''; }
+    if (st === 'none') return '';
+    if (st === 'stale') {
+      f.stale = true; f.text = ''; f.needSelect = false;
+      return '<div class="notice lost-memo" role="note">督促文（' + esc(f.kind) + '）: 一覧が更新されたため、この文面は使えません。もう一度ボタンを押してください</div>';
+    }
+    return '<div class="notice lost-memo" role="note">督促文（' + esc(f.kind) + '）をコピーできませんでした。下の文面を選んでコピーしてください（一覧の取得（' + esc(f.fetchedAt) + '）時点の値です。入金済みでないかを確かめてから送ってください）' +
+      '<textarea readonly data-ui-key="dun:fail">' + esc(f.text) + '</textarea></div>';
+  }
+
+  // 欄を作った最初の1回だけ、文面を選んだ状態にする（描き直しのたびに選ぶと、メモの入力中のフォーカスを奪う）
+  function selectDunningFail() {
+    var f = S.dunningFail;
+    if (!f || !f.needSelect || f.id !== S.openId) return;
+    var el = document.querySelector('#detail [data-ui-key="dun:fail"]');
+    if (!el) return;   // まだ描かれていない（入力の変換中など）。次の描き直しで選ぶ
+    f.needSelect = false;
+    el.focus({ preventScroll: true });
+    el.select();
+  }
+
+  // 詳細を開く・閉じる・表示を消すときの片付け。進行中の印（copyInFlight）は外さない（実際のコピーが終わるまで次を始めない）
+  function resetDunningView() {
+    S.openSeq++;
+    S.dunningMsg = null;
+    S.dunningFail = null;
+  }
+
+  // 結果を画面に出してよいか（押したときの請求ID・サインインの世代・開いた回・コピーの番号が今と同じ）
+  function dunningCurrent(c) {
+    return c.id === S.openId && c.gen === S.authGen && c.openSeq === S.openSeq && c.seq === S.copySeq;
+  }
+
+  // 作り物の API（?mock=1）のときだけ、試験用のクリップボードに差し替えられる。それ以外は navigator.clipboard
+  function clipboardApi() {
+    if (MOCK && window.AR_MOCK_CLIPBOARD !== undefined) return window.AR_MOCK_CLIPBOARD;
+    return navigator.clipboard;
+  }
+
+  function copyDunning(kind) {
+    var id = S.openId;
+    var card = findCard(id);
+    var t = dunningTemplate(kind);
+    if (!card || !t || S.copyInFlight || V.dunningBlock(card)) return;
+    var text = V.fillDunning(t.text, card);
+    var c = { id: id, gen: S.authGen, openSeq: S.openSeq, seq: ++S.copySeq, kind: kind, text: text, fetchedAt: S.fetchedAt, sig: V.dunningSig(card, t.text), timer: null };
+    var p;
+    try {
+      var clip = clipboardApi();
+      if (!clip || typeof clip.writeText !== 'function') throw new Error('クリップボードが使えない');
+      p = clip.writeText(text);
+    } catch (e) {
+      dunningResult(c, false);   // その場の失敗: 進行中の印は立てない
+      refreshViews();
+      return;
+    }
+    S.copyInFlight = c;
+    if (S.dunningMsg && S.dunningMsg.id === id) S.dunningMsg = null;
+    // 10秒たっても終わらないときは案内を出すだけ。印は外さない（時間で次のコピーを始めない）
+    c.timer = setTimeout(function () {
+      if (S.copyInFlight !== c || !dunningCurrent(c)) return;
+      S.dunningMsg = { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: 'error',
+        text: 'コピーの完了を確かめられていません。少し待ってからもう一度押してください（直らなければページを読み込み直してください）' };
+      refreshViews();
+    }, 10000);
+    refreshViews();
+    Promise.resolve(p).then(function () { done(true); }, function () { done(false); });
+    function done(ok) {
+      clearTimeout(c.timer);
+      if (S.copyInFlight === c) S.copyInFlight = null;   // 実際に終わったときだけ外す（結果を出すか捨てるかに関係なく）
+      dunningResult(c, ok);
+      refreshViews();
+    }
+  }
+
+  // コピーの結果を出す。押したときと今が違えば捨てる（OS へ渡したコピーは取り消せないものとして扱い、別の詳細には知らせない）
+  function dunningResult(c, ok) {
+    if (!dunningCurrent(c)) return;
+    var label = '督促文（' + c.kind + '）';
+    if (ok) {
+      // 押した後に一覧を取り直した・入金済みと分かったなら、コピーした文は使わせない
+      var card = findCard(c.id);
+      var t = dunningTemplate(c.kind);
+      var changed = !card || !t || !!V.dunningBlock(card) || V.dunningSig(card, t.text) !== c.sig;
+      S.dunningMsg = changed
+        ? { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: 'error', text: label + 'をコピーしましたが、一覧が更新されました（または入金済みと分かりました）。この文は使わず、もう一度ボタンを押してください' }
+        : { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: '', text: label + 'をコピーしました。一覧の取得（' + c.fetchedAt + '）時点の値です。入金済みでないかを確かめてから送ってください' };
+      if (S.dunningFail && S.dunningFail.id === c.id && S.dunningFail.kind === c.kind) S.dunningFail = null;
+      return;
+    }
+    S.dunningMsg = { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: 'error', fail: true, text: label + 'をコピーできませんでした。下の文面を選んでコピーしてください' };
+    S.dunningFail = { id: c.id, kind: c.kind, text: c.text, fetchedAt: c.fetchedAt, sig: c.sig, stale: false, needSelect: true };
   }
 
   function noticeHTML() {
@@ -1475,6 +1619,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     else if (b.dataset.choice) { S.draftStatus = b.dataset.choice; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-assignee')) { S.draftAssignee = b.dataset.assignee; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-save')) save();
+    else if (b.dataset.dunning) copyDunning(b.dataset.dunning);   // 督促文のコピー（督促の支援 段2）
     else if (b.hasAttribute('data-refresh')) loadList();
     else if (b.hasAttribute('data-paid-toggle')) { S.paidOpen = !S.paidOpen; renderOutcome(); }   // 「入金で解消」の行全体で開閉（UI-1）
     else if (b.hasAttribute('data-move-now')) kickMoves('now');   // 3秒を待たずに送り出す・止まった送り出しを続ける（段D §9-3 の4・6）

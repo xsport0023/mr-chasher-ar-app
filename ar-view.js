@@ -234,6 +234,85 @@
     return !cur || inc.recordId > (cur.recordId || 0) ? inc : cur;
   }
 
+  // ---- 督促の支援 段2（plan_id = ar-app-dunning。計画 §3-2-3・§3-2-5）: 督促文のコピー ----
+  var DUNNING_KINDS = ['初回', '2回目'];
+  var DUNNING_TAGS = /\{(取引先名|請求番号|件名|支払期限|請求金額)\}/g;
+
+  // 一覧の応答から、持つ文面を決める（§3-2-5）。dunningTemplates が在れば丸ごと置き換える（形の合う行だけ）。
+  // 読み失敗（dunningError）なら前の文面を保つ。どちらも無い（旧サーバ）なら空
+  function dunningTemplatesOf(json, prev) {
+    if (json && Array.isArray(json.dunningTemplates)) {
+      var seen = {};
+      return json.dunningTemplates.filter(function (t) {
+        var ok = !!t && DUNNING_KINDS.indexOf(t.kind) >= 0 && typeof t.text === 'string' && t.text.trim() !== '' && !seen[t.kind];
+        if (ok) seen[t.kind] = true;
+        return ok;
+      }).map(function (t) { return { kind: t.kind, text: t.text }; });
+    }
+    if (json && json.dunningError) return prev || [];
+    return [];
+  }
+
+  // '2026-08-31' → '2026年8月31日'（月日の0を付けない）。形が違えば ''
+  function dunningDate(ymd) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+    return m ? Number(m[1]) + '年' + Number(m[2]) + '月' + Number(m[3]) + '日' : '';
+  }
+
+  // 193864 → '193,864'（¥ は付けない。文面に「円」が在る）。正の整数でなければ ''
+  function dunningAmount(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n <= 0 || Math.floor(n) !== n) return '';
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  function blankText(v) { return v === null || v === undefined || String(v).trim() === ''; }
+
+  // 督促文を作れない理由（作れるなら ''）。督促文は社外へ出るので、誤った値の文を作らない側に倒す（§3-2-3）
+  function dunningBlock(card) {
+    if (!card) return '請求が見つかりません';
+    if (card.paidMark) return 'この請求は入金済みになりました。一覧を取り直してください';
+    var lack = [];
+    if (blankText(card.partner)) lack.push('取引先名');
+    if (blankText(card.billingNumber)) lack.push('請求番号');
+    if (!dunningDate(card.dueDate)) lack.push('支払期限');
+    if (!dunningAmount(card.amount)) lack.push('請求金額');
+    if (lack.length) return '請求の値（' + lack.join('・') + '）が欠けているため作れません';
+    if (card.deduct !== 'none') return '差し引きのある（または有無が分からない）請求は、金額を確かめて手で作ってください';
+    return '';
+  }
+
+  // 差し込み。全部の印を1回の走査で、関数で置き換える（値の中の {…}・$&・$1 は展開しない）。知らない {…} と「○○様」は残す。
+  // 呼ぶ前に dunningBlock が '' であることを確かめる
+  function fillDunning(text, card) {
+    var v = {
+      '取引先名': String(card.partner),
+      '請求番号': String(card.billingNumber),
+      '件名': blankText(card.title) ? '（件名なし）' : String(card.title),
+      '支払期限': dunningDate(card.dueDate),
+      '請求金額': dunningAmount(card.amount)
+    };
+    return String(text).replace(DUNNING_TAGS, function (all, name) { return v[name]; });
+  }
+
+  // 差し込みの元の印（取引先名・請求番号・件名・支払期限・金額・文面）。一覧の取り直しで変わったかを見る（§3-2-5）
+  function dunningSig(card, text) {
+    return JSON.stringify([card ? card.partner : null, card ? card.billingNumber : null, card ? card.title : null,
+      card ? card.dueDate : null, card ? card.amount : null, text === undefined ? null : text]);
+  }
+
+  // 失敗の欄（{ id, kind, text, fetchedAt, sig }）をどう描くか。text は今のその種類の文面（無ければ null）。
+  //   'none'  … 描かない（欄が無い・開いている請求と違う）
+  //   'clear' … 片付ける（作れなくなった・その種類の文面が消えた）
+  //   'stale' … 文面を消し「もう一度押してください」とだけ出す（差し込みの元が変わった）
+  //   'show'  … そのまま
+  function dunningBoxState(fail, card, text) {
+    if (!fail || !card || fail.id !== card.billingId) return 'none';
+    if (text === null || text === undefined) return 'clear';
+    if (dunningBlock(card)) return 'clear';
+    if (fail.stale || dunningSig(card, text) !== fail.sig) return 'stale';
+    return 'show';
+  }
+
   // 'yyyy/MM/dd HH:mm:ss' → 'yyyy/MM/dd HH:mm'
   function shortAt(at) {
     var s = String(at || '');
@@ -632,7 +711,9 @@
     perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX,
     snapshotOf: snapshotOf, outcomeView: outcomeView, outcomeNote: outcomeNote, jpDateTime: jpDateTime, deltaText: deltaText, SNAP_MAX_ITEMS: SNAP_MAX_ITEMS,
     lastActLine: lastActLine, newerLast: newerLast,
-    VERSION: '2026-10-03.dunning.2'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-03）
+    DUNNING_KINDS: DUNNING_KINDS, dunningTemplatesOf: dunningTemplatesOf, dunningDate: dunningDate, dunningAmount: dunningAmount,
+    dunningBlock: dunningBlock, fillDunning: fillDunning, dunningSig: dunningSig, dunningBoxState: dunningBoxState,
+    VERSION: '2026-10-03.dunning.3'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-03）
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;
