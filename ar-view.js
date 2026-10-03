@@ -282,12 +282,13 @@
   }
 
   // 差し込み。全部の印を1回の走査で、関数で置き換える（値の中の {…}・$&・$1 は展開しない）。知らない {…} と「○○様」は残す。
+  // 取引先名と件名は前後の空白（全角を含む）だけを取る（MF の件名の先頭に空白が入った請求があった。D2-4、ユーザー決定 A 2026-10-03）。
   // 呼ぶ前に dunningBlock が '' であることを確かめる
   function fillDunning(text, card) {
     var v = {
-      '取引先名': String(card.partner),
+      '取引先名': String(card.partner).trim(),
       '請求番号': String(card.billingNumber),
-      '件名': blankText(card.title) ? '（件名なし）' : String(card.title),
+      '件名': blankText(card.title) ? '（件名なし）' : String(card.title).trim(),
       '支払期限': dunningDate(card.dueDate),
       '請求金額': dunningAmount(card.amount)
     };
@@ -713,7 +714,7 @@
     lastActLine: lastActLine, newerLast: newerLast,
     DUNNING_KINDS: DUNNING_KINDS, dunningTemplatesOf: dunningTemplatesOf, dunningDate: dunningDate, dunningAmount: dunningAmount,
     dunningBlock: dunningBlock, fillDunning: fillDunning, dunningSig: dunningSig, dunningBoxState: dunningBoxState,
-    VERSION: '2026-10-03.dunning.3'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-03）
+    VERSION: '2026-10-03.dunning.5'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-03）
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;

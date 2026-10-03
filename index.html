@@ -126,6 +126,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .detail-meta .pill{padding:5px 9px;box-shadow:none;font-size:11px;font-weight:850}
 /* 督促文のコピー（督促の支援 段2、計画 ar-app-dunning §3-2-5）。帯の中で折り返す。知らせ・理由は帯のすぐ下の専用の1行 */
 .detail-meta .dunning-btn{padding:5px 9px;font-size:11px}
+.detail-meta .dunning-btn[data-dunning="初回"]{background:#fff4b8}.detail-meta .dunning-btn[data-dunning="2回目"]{background:#ffd9de} /* 初回は薄い黄色・2回目は薄い赤（ユーザー依頼 2026-10-03） */
 .dunning-line{margin-top:8px;font-size:12px;font-weight:800;color:#206f5d;overflow-wrap:anywhere}
 .dunning-line.muted{color:#665e76;font-weight:700}.dunning-line.error{color:#a3203a}
 .detail-body{padding:22px}.detail-body h3{margin:0 0 10px;font-size:15px}
@@ -178,7 +179,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 <script src="config.js"></script>
-<script src="ar-view.js?v=2026-10-03.dunning.3"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
+<script src="ar-view.js?v=2026-10-03.dunning.5"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
 </head>
 <body>
 <div class="app">
@@ -233,7 +234,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   'use strict';
   var C = window.AR_CONFIG;
   var V = window.ArView;
-  var VIEW_VERSION = '2026-10-03.dunning.3';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
+  var VIEW_VERSION = '2026-10-03.dunning.5';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
   var MOCK = new URLSearchParams(location.search).get('mock') === '1';
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (v) { return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
