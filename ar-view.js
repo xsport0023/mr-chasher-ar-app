@@ -212,6 +212,28 @@
     });
   }
 
+  // ---- 督促の支援 段1（plan_id = ar-app-dunning。計画 §3-3）: カードの最新の記録の1行 ----
+  // サーバの last（連絡状況かメモを変えた最後の記録）から文言を作る。無ければ ''。言い回しは historyLines と同じ。
+  // 例「10/02 14:31 小笠原 章洋　連絡状況: ノータッチ → 連絡済み」
+  function lastActLine(last) {
+    if (!last || typeof last !== 'object' || typeof last.recordId !== 'number') return '';
+    var parts = [];
+    if (last.statusChanged) parts.push('連絡状況: ' + (last.prev || 'ノータッチ') + ' → ' + last.status);
+    if (last.memoChanged) parts.push(last.memoCleared ? 'メモを消去' : 'メモを更新');
+    if (!parts.length) return '';
+    var at = String(last.at || '');
+    var when = /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/.test(at) ? at.slice(5, 16) : at;
+    return (when ? when + ' ' : '') + (last.who ? last.who + '　' : '') + parts.join('／');
+  }
+
+  // カードの1行を進めるのは、届いた last の記録ID が今より大きいときだけ（K2 と同じ。古い応答で戻さない）。同じ ID は今のまま。
+  // 欄が無い・null の応答（旧サーバなど）では今の1行を消さない（計画レビュー第1巡 指摘2）。
+  // カードの lastRecordId・担当の assigneeRecordId とは比べない（担当だけの保存で lastRecordId は進むが、1行は進まない）
+  function newerLast(cur, inc) {
+    if (!inc || typeof inc !== 'object' || typeof inc.recordId !== 'number') return cur || null;
+    return !cur || inc.recordId > (cur.recordId || 0) ? inc : cur;
+  }
+
   // 'yyyy/MM/dd HH:mm:ss' → 'yyyy/MM/dd HH:mm'
   function shortAt(at) {
     var s = String(at || '');
@@ -609,7 +631,8 @@
     mergeRecords: mergeRecords, newerState: newerState, perfResult: perfResult, perfServerFields: perfServerFields,
     perfQueueAdd: perfQueueAdd, perfQueueRemove: perfQueueRemove, perfWire: perfWire, PERF_QUEUE_MAX: PERF_QUEUE_MAX,
     snapshotOf: snapshotOf, outcomeView: outcomeView, outcomeNote: outcomeNote, jpDateTime: jpDateTime, deltaText: deltaText, SNAP_MAX_ITEMS: SNAP_MAX_ITEMS,
-    VERSION: '2026-10-01.outcome.2'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-01）
+    lastActLine: lastActLine, newerLast: newerLast,
+    VERSION: '2026-10-03.dunning.1'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-03）
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;

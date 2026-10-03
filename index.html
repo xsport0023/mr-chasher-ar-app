@@ -105,6 +105,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .amount{font-size:21px;letter-spacing:-.04em;font-weight:950;white-space:nowrap;flex-shrink:0;line-height:1.3}
 .memo-excerpt{flex:1;min-width:0;font-size:11px;line-height:1.45;height:4.35em;color:#4c4560;white-space:pre-line;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow-wrap:anywhere;border-left:2px dotted #cfc6d9;padding-left:8px}
 .memo-excerpt:empty{border-left-color:transparent}
+/* メモの段の下に、最新の記録を1行（はみ出しは …。督促の支援 段1、計画 ar-app-dunning §3-3） */
+.last-act{display:block;margin-top:7px;font-size:11px;color:#5c556b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card-bottom{border-top:2px dashed #d8d1e2;margin-top:10px;padding-top:11px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:space-between;font-size:11px;font-weight:750}
 .age{background:#ffe2e1;border:2px solid #1d1830;border-radius:99px;padding:4px 8px;font-size:11px;font-weight:900}
 .age.high{background:#ff8b9a}.age.medium{background:#ffd569}
@@ -131,7 +133,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .detail-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
 .note-area{width:100%;min-height:220px;border:2px solid #1d1830;border-radius:15px;padding:12px;resize:vertical;line-height:1.65;background:#fffdf8}
 .limit{text-align:right;color:#696176;font-size:11px;margin-top:4px}
-.history{border:2px solid #1d1830;border-radius:15px;padding:0 13px;background:#faf8ff;max-height:300px;overflow:auto}
+.history{border:2px solid #1d1830;border-radius:15px;padding:0 13px;background:#faf8ff;max-height:150px;overflow:auto} /* 直近2件ほどが見え、残りはスクロール（督促の支援 段1。それまでは 300px） */
 .history-item{padding:12px 0;border-bottom:1px dashed #cfc6d9;font-size:12px;line-height:1.55;overflow-wrap:anywhere}
 .history-item:last-child{border-bottom:0}.history-item strong{display:block}
 .history-item small{display:block;color:#706a7d;margin-bottom:3px}
@@ -172,7 +174,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 <script src="config.js"></script>
-<script src="ar-view.js?v=2026-10-01.outcome.2"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
+<script src="ar-view.js?v=2026-10-03.dunning.1"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
 </head>
 <body>
 <div class="app">
@@ -227,7 +229,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   'use strict';
   var C = window.AR_CONFIG;
   var V = window.ArView;
-  var VIEW_VERSION = '2026-10-01.outcome.2';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
+  var VIEW_VERSION = '2026-10-03.dunning.1';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
   var MOCK = new URLSearchParams(location.search).get('mock') === '1';
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (v) { return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -935,6 +937,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   function shownMemo(c) { var w = pendingWish(c); return w && w.memo !== undefined ? w.memo : c.memo; }
 
   function cardHTML(c) {
+    var lastLine = V.lastActLine(c.last);   // 確定した記録の1行（保存待ち・未確定の希望は出さない。§3-3-3）
     var unsettled = locked(c.billingId);
     var writing = !!(S.write && S.write.id === c.billingId);
     var waiting = has(S.moves, c.billingId);
@@ -942,7 +945,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var drag = canDrag && !unsettled && !writing ? ' draggable="true"' : '';
     return '<button type="button" class="invoice-card' + (S.openId === c.billingId ? ' is-active' : '') + (unsettled || writing ? ' is-pending' : '') + '"' + drag +
       ' data-open="' + esc(c.billingId) + '" aria-label="' + esc(c.partner) + (c.billingNumber ? ' 請求番号 ' + esc(c.billingNumber) : '') + ' ' + esc(c.title) + ' ' + V.yen(c.amount) + ' ' + esc(status) +
-      (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (writing ? ' 保存中' : unsettled ? ' 未確定' : waiting ? ' 保存待ち' : '') + (c.paidMark ? ' 入金済み' : '') + ' 詳細を開く">' +
+      (S.features ? ' 担当 ' + esc(V.assigneeLabel(S.staff, c.assignee)) : '') + (writing ? ' 保存中' : unsettled ? ' 未確定' : waiting ? ' 保存待ち' : '') + (c.paidMark ? ' 入金済み' : '') + (lastLine ? ' 最新の記録 ' + esc(lastLine) : '') + ' 詳細を開く">' +
       '<span class="card-top"><span><span class="client">' + esc(c.partner) + '</span>' +
       (c.billingNumber ? '<span class="billing-no" title="請求番号">No.' + esc(c.billingNumber) + '</span>' : '') + '<span class="subject">' + esc(c.title) + '</span></span>' +
       (writing ? '<span class="unsettled-mark">保存中</span>' : unsettled ? '<span class="unsettled-mark">未確定</span>' : waiting ? '<span class="unsettled-mark">保存待ち</span>' : '') +
@@ -951,6 +954,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<span class="money-row"><span class="money-left"><span class="amount">' + V.yen(c.amount) + '</span>' +
       (S.features ? '<span class="assignee-tag' + (V.isUnassigned(S.staff, c.assignee) && !c.assignee ? ' none' : '') + '" title="担当">' + esc(V.assigneeLabel(S.staff, c.assignee)) + '</span>' : '') + '</span>' +
       '<span class="memo-excerpt" title="メモの先頭3行">' + esc(V.memoExcerpt(shownMemo(c))) + '</span></span>' +
+      (lastLine ? '<span class="last-act" title="' + esc(lastLine) + '">' + esc(lastLine) + '</span>' : '') +
       '<span class="card-bottom"><span class="date">' + dateLabel(S.tab) + ' ' + V.jpDate(dateOf(c, S.tab)) + '</span>' +
       '<span class="age ' + V.ageClass(c.days) + '">' + V.ageLabel(S.tab, c.days) + '</span>' + statusBadge(status) + '</span></button>';
   }
@@ -1010,6 +1014,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (card && recs.length && recs[0].recordId > (card.lastRecordId || 0)) {
       card.status = recs[0].status; card.memo = recs[0].memo; card.lastRecordId = recs[0].recordId;
     }
+    applyLast(card, r.json.last);
     // 担当の履歴は records と分けて持ち、記録ID で重ねずに合わせる（第1巡 指摘1。保存の応答で先に入った1行を消さない）
     // 取引先が食い違ったときは、前に読んだ履歴も合わせずに捨てる（別の取引先の履歴を残さない。H1 実装レビュー第1巡 指摘2）
     var hist = r.json.partnerMismatch ? [] : V.mergeRecords(S.detail ? S.detail.assigneeHistory : [], r.json.assigneeHistory || []);
@@ -1242,6 +1247,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var card = findCard(id);
     if (r.kind === 'ok') {
       if (card) applyState(card, r.json.state);
+      applyLast(card, r.json.state && r.json.state.last);
       // 保存されなかったメモと同じ内容が保存できたら、メモだけの古い控えは役目を終えた
       V.removeLostMemo(S.lost, id, r.json.state.memo);
       // 記録の欄へ保存した1行を足す（その請求の詳細が開いているときだけ。K2）
@@ -1270,7 +1276,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (r.kind === 'fail') {
       var why = V.failureText(r.kind, r.code);
       var paid = r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND';
-      if (r.code === 'CONFLICT' && card && r.json.state) applyState(card, r.json.state);
+      if (r.code === 'CONFLICT' && card && r.json.state) { applyState(card, r.json.state); applyLast(card, r.json.state.last); }
       if (paid && card) card.paidMark = true;   // 一覧は自動では取り直さない（§8-13-1 の3）
       // 書かれなかったと決まった: 希望の全項目を要確認の1件にまとめてから、その操作を外す（§8-13-1 の1）
       V.addWish(S.lost, id, op.partner, why + '。保存していません', op.wish, opMeta(op));
@@ -1320,6 +1326,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var w = u.wish || { memo: u.lostMemo || undefined, assignee: u.assignee, status: u.kind === 'drag' ? u.to : undefined };
     delete S.unsettled[id];
     if (card) applyState(card, r.json.state);
+    applyLast(card, r.json.last);        // written は確定済みの最新の1行へ、cancelled は書かれなかった希望を出さない（サーバは記録からだけ求める）
     applyAssigneeState(r.json.state);
     var written = r.json.settled === 'written';
     // 保存できていたなら、通常の保存成功と同じく、保存後のメモと同じ内容のメモだけの控えを外す（差分確認 第2巡 条件）
@@ -1374,6 +1381,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     card.status = st.status; card.memo = st.memo; card.lastRecordId = st.lastRecordId;
   }
 
+  // カードの最新の記録の1行（督促の支援 段1）。受け取った last.recordId が今の1行より大きいときだけ進める（V.newerLast）
+  function applyLast(card, last) {
+    if (card) card.last = V.newerLast(card.last, last);
+  }
+
   // 要確認の「この内容で開き直す」: 詳細を開き、希望の全項目を書きかけとして入れる。自動では送らない（§8-13-1 の1）。
   // 別の請求の書きかけは、閉じる確認を通す（§8-14-2 の I2）
   function reopenWish(id, idx) {
@@ -1416,6 +1428,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var card = findCard(op.id);
     if (r.kind === 'ok') {
       if (card) applyState(card, r.json.state);
+      applyLast(card, r.json.state && r.json.state.last);
       S.moveTally.saved++;
       return { o: 'continue' };
     }
@@ -1432,7 +1445,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     }
     var why = V.failureText(r.kind, r.code);
     var paid = r.code === 'PAID_OR_OUT_OF_SCOPE' || r.code === 'NOT_FOUND';
-    if (r.code === 'CONFLICT' && card && r.json.state) applyState(card, r.json.state);
+    if (r.code === 'CONFLICT' && card && r.json.state) { applyState(card, r.json.state); applyLast(card, r.json.state.last); }
     if (paid && card) card.paidMark = true;   // 一覧は自動では取り直さない（§8-13-1 の3）
     V.addWish(S.lost, op.id, op.partner, why + '。移していません', op.wish, opMeta(op));
     S.moveTally.failed++;
