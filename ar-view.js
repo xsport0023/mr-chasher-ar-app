@@ -234,6 +234,46 @@
     return !cur || inc.recordId > (cur.recordId || 0) ? inc : cur;
   }
 
+  // ---- 督促の支援 段3（plan_id = ar-app-dunning。計画 §3-1-3・§3-1-4）: 請求書 PDF ----
+
+  // 履歴の後先: a が b より「後」か。ms の大きいほう、同じ ms なら印の文字の並びの大きいほう（サーバの arPdfOrderAfter_ と同じ規則）
+  function pdfOrderAfter(a, b) {
+    if (!a) return false;
+    if (!b) return true;
+    if (a.ms !== b.ms) return a.ms > b.ms;
+    return a.id > b.id;
+  }
+  function pdfLastOk(x) {
+    return !!x && typeof x === 'object' && !!x.order && typeof x.order.ms === 'number' && isFinite(x.order.ms) &&
+      typeof x.order.id === 'string' && x.order.id !== '' && typeof x.at === 'string';
+  }
+  // 持っている値（prev）と届いた値（next）のうち「後」のほうを返す。形の合わない値・同じ値・前の値では置き換えない。
+  // 届いた値が無くても持っている値は消さない（遅れて届いた古い一覧で、その場で付けた札を消さない。§3-1-4）
+  function pdfLastPick(prev, next) {
+    var p = pdfLastOk(prev) ? prev : null;
+    var n = pdfLastOk(next) ? next : null;
+    if (!n) return p;
+    return pdfOrderAfter(n.order, p ? p.order : null) ? n : p;
+  }
+  // 帯の札「PDF取得 10/04 11:20 田中」（at は yyyy/MM/dd HH:mm:ss）
+  function pdfLastLabel(x) {
+    if (!pdfLastOk(x)) return '';
+    var m = /^\d{4}\/(\d{2})\/(\d{2}) (\d{2}):(\d{2})/.exec(x.at);
+    return 'PDF取得 ' + (m ? m[1] + '/' + m[2] + ' ' + m[3] + ':' + m[4] : x.at) + (x.who ? ' ' + x.who : '');
+  }
+  // 失敗の知らせ（帯の下の1行。§3-1-4）。認証の失敗は画面が handleAuthFailure へ渡すので、ここへは来ない
+  function pdfFailText(r) {
+    var k = r ? r.kind : 'network';
+    if (k === 'timeout' || k === 'network') return '応答がありませんでした。もう一度押してください';
+    if (k === 'fail') {
+      var c = r.code;
+      if (c === 'PAID_OR_OUT_OF_SCOPE' || c === 'NOT_FOUND') return '入金済みか対象外になりました。一覧を取り直してください';
+      if (c === 'MF_ERROR') return 'MF 請求から取れませんでした（' + String(r.json && r.json.mfCode !== undefined && r.json.mfCode !== null ? r.json.mfCode : '—') + '）。少し時間を置いてもう一度押してください';
+      if (c === 'PDF_URL_MISMATCH' || c === 'NOT_PDF' || c === 'PDF_TOO_LARGE') return 'この請求の PDF はここでは取れません。MF 請求の画面から取ってください';
+    }
+    return 'PDF を取れませんでした。もう一度押してください';
+  }
+
   // ---- 督促の支援 段2（plan_id = ar-app-dunning。計画 §3-2-3・§3-2-5）: 督促文のコピー ----
   var DUNNING_KINDS = ['初回', '2回目'];
   var DUNNING_TAGS = /\{(取引先名|請求番号|件名|支払期限|請求金額)\}/g;
@@ -714,7 +754,8 @@
     lastActLine: lastActLine, newerLast: newerLast,
     DUNNING_KINDS: DUNNING_KINDS, dunningTemplatesOf: dunningTemplatesOf, dunningDate: dunningDate, dunningAmount: dunningAmount,
     dunningBlock: dunningBlock, fillDunning: fillDunning, dunningSig: dunningSig, dunningBoxState: dunningBoxState,
-    VERSION: '2026-10-03.dunning.5'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-03）
+    pdfOrderAfter: pdfOrderAfter, pdfLastPick: pdfLastPick, pdfLastLabel: pdfLastLabel, pdfFailText: pdfFailText,
+    VERSION: '2026-10-04.dunning.6'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-04）
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;

@@ -128,6 +128,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .detail-meta .dunning-btn{padding:5px 9px;font-size:11px}
 .detail-meta .dunning-btn[data-dunning="初回"]{background:#fff4b8}.detail-meta .dunning-btn[data-dunning="2回目"]{background:#ffd9de} /* 初回は薄い黄色・2回目は薄い赤（ユーザー依頼 2026-10-03） */
 .dunning-line{margin-top:8px;font-size:12px;font-weight:800;color:#206f5d;overflow-wrap:anywhere}
+/* 請求書 PDF（督促の支援 段3、計画 ar-app-dunning §3-1-4）。帯の金額の右・督促文の左。札は最後に取った日時・誰 */
+.detail-meta .pdf-btn{padding:5px 9px;font-size:11px;background:#dff1ff}.detail-meta .pdf-last{background:#f4f1ff}
+.dunning-line a{color:inherit;text-decoration:underline}
 .dunning-line.muted{color:#665e76;font-weight:700}.dunning-line.error{color:#a3203a}
 .detail-body{padding:22px}.detail-body h3{margin:0 0 10px;font-size:15px}
 .status-choices{display:flex;flex-wrap:wrap;gap:9px}
@@ -179,7 +182,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 <script src="config.js"></script>
-<script src="ar-view.js?v=2026-10-03.dunning.5"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
+<script src="ar-view.js?v=2026-10-04.dunning.6"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
 </head>
 <body>
 <div class="app">
@@ -234,7 +237,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   'use strict';
   var C = window.AR_CONFIG;
   var V = window.ArView;
-  var VIEW_VERSION = '2026-10-03.dunning.5';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
+  var VIEW_VERSION = '2026-10-04.dunning.6';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
   var MOCK = new URLSearchParams(location.search).get('mock') === '1';
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (v) { return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -258,6 +261,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     // copyInFlight: 実際のコピー（writeText の Promise）が終わるまでの印。終わったときにだけ外す（時間では外さない）。
     // openSeq: 詳細を開く・閉じる・表示を消すで1つ進む（読み直しでは進まない）。copySeq: コピーの番号
     dunning: [], dunningMsg: null, dunningFail: null, copyInFlight: null, openSeq: 0, copySeq: 0,
+    // 督促の支援 段3（計画 ar-app-dunning §3-1-4）: 請求書 PDF。pdfInFlight は応答が戻る・打ち切るまでの印（1件ずつ。サインアウトでは外さない）。
+    // pdfMsg: 失敗の知らせ { id, openSeq, tone, text }。pdfSave: 成功の知らせ・「ここを押して保存」・Blob の URL を1つにまとめたもの
+    // { id, openSeq, url, fileName, text, timer }（1つだけ。片付けると知らせ・リンク・URL が一緒に消える。実装レビュー第1巡 指摘1）
+    pdfInFlight: null, pdfSeq: 0, pdfMsg: null, pdfSave: null,
     tab: '未入金', days: 1, query: '', sort: 'age',
     openId: null, openPartner: '', detailGen: 0,
     detail: null,         // { loading, records, error }
@@ -767,7 +774,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       var openId = S.openId;
       var openCard = openId ? findCard(openId) : null;
       var openWish = openCard && !locked(openId) ? V.draftWish(openCard, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null) : null;
+      var prevPdf = {};   // 請求書 PDF の札: 持っている値と一覧の値の「後」のほうを採る（遅れて届いた古い一覧で札を古くしない。段3 §3-1-4）
+      allCards().forEach(function (c) { if (c.pdfLast) prevPdf[c.billingId] = c.pdfLast; });
       S.tabs = r.json.tabs;
+      allCards().forEach(function (c) { var p = V.pdfLastPick(prevPdf[c.billingId], c.pdfLast); if (p) c.pdfLast = p; else delete c.pdfLast; });
       S.fetchedAt = r.json.fetchedAt;
       S.warnings = r.json.warnings || [];
       S.dunning = V.dunningTemplatesOf(r.json, S.dunning);   // 読み失敗は前の文面を保ち、旧サーバ（欄なし）なら空（§3-2-5）
@@ -1093,9 +1103,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       '<header class="detail-header"><div class="detail-header-top"><span class="eyebrow">請求の詳細 · 請求番号 ' + esc(card.billingNumber) + '</span>' +
       '<button class="button small ghost" type="button" data-close>✕ 閉じる</button></div>' +
       '<h2 id="detail-title">' + esc(card.partner) + '</h2><div class="subject">' + esc(card.title) + '</div>' +
-      '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong>' + dunningButtonsHTML(card) + '<span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
+      '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong>' + pdfButtonHTML(card) + dunningButtonsHTML(card) + '<span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
       '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(shownStatus(card)) + (writing ? '<span class="pill">保存中</span>' : moveWait ? '<span class="pill">保存待ち</span>' : '') + '</div>' +
-      dunningLineHTML(card) + '</header>' +
+      pdfLineHTML(card) + dunningLineHTML(card) + '</header>' +
       '<div class="detail-body">' + noticeHTML() + failBox + lostBoxHTML() +
       // 左に連絡状況とメモ、右に担当と記録。左右の先頭をそろえる（ユーザー依頼 2026-09-27）
       '<div class="detail-columns"><section><h3>連絡状況を選ぶ</h3><div class="status-choices" role="group" aria-label="連絡状況" style="margin-bottom:16px">' + choices + '</div>' +
@@ -1253,6 +1263,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     S.openSeq++;
     S.dunningMsg = null;
     S.dunningFail = null;
+    S.pdfMsg = null;   // 請求書 PDF の知らせと「ここを押して保存」も片付ける（URL を解放する。進行中の印 pdfInFlight は外さない。段3 §3-1-4）
+    clearPdfSave();
   }
 
   // 結果を画面に出してよいか（押したときの請求ID・サインインの世代・開いた回・コピーの番号が今と同じ）
@@ -1319,6 +1331,103 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     }
     S.dunningMsg = { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: 'error', fail: true, text: label + 'をコピーできませんでした。下の文面を選んでコピーしてください' };
     S.dunningFail = { id: c.id, kind: c.kind, text: c.text, fetchedAt: c.fetchedAt, sig: c.sig, stale: false, needSelect: true };
+  }
+
+  // ---- 請求書 PDF（督促の支援 段3、計画 ar-app-dunning §3-1-4） ----
+  // サーバの action が在る（features.pdf）ときだけボタンを出す。PDF は1件ずつ（S.pdfInFlight）。
+  // 結果は、押したときのサインインの世代が今と違えば保存もせず捨てる。世代が同じなら保存し、知らせは押した詳細（請求ID・開いた回）にだけ出す
+  function pdfFeature() { return !!(S.features && S.features.pdf); }
+
+  // 帯の「請求書 PDF」のボタンと「PDF取得 …」の札
+  function pdfButtonHTML(card) {
+    if (!pdfFeature()) return '';
+    var why = card.paidMark ? 'この請求は入金済みになりました。一覧を取り直してください' : '';
+    var title = why || (S.pdfInFlight ? 'PDF を取得しています' : '請求書の PDF を保存します');
+    var label = V.pdfLastLabel(card.pdfLast);
+    return '<button type="button" class="button small ghost pdf-btn" data-pdf data-ui-key="pdf:btn" title="' + esc(title) + '"' +
+      (why || S.pdfInFlight ? ' disabled' : '') + '>' + (S.pdfInFlight ? '取得中…' : '請求書 PDF') + '</button>' +
+      (label ? '<span class="pill pdf-last">' + esc(label) + '</span>' : '');
+  }
+
+  // 帯の下の1行: この詳細の PDF の知らせと「ここを押して保存」
+  function pdfLineHTML(card) {
+    if (!pdfFeature()) return '';
+    var m = S.pdfMsg;
+    var sv = S.pdfSave;
+    var here = function (x) { return !!x && x.id === S.openId && x.openSeq === S.openSeq; };
+    var out = '';
+    if (here(m)) out += '<div class="dunning-line' + (m.tone ? ' ' + m.tone : '') + '" role="status">' + esc(m.text) + '</div>';
+    if (here(sv)) out += '<div class="dunning-line" role="status" data-ui-key="pdf:done">' + esc(sv.text) + ' 保存されないときは<a href="' + esc(sv.url) + '" download="' + esc(sv.fileName) + '" data-ui-key="pdf:save">ここを押して保存</a></div>';
+    return out;
+  }
+
+  // 成功の知らせと「ここを押して保存」の1行を消し、その保存が持つ URL を解放する（詳細の開閉・表示の消去・次の PDF の成功・60秒）
+  function clearPdfSave() {
+    var sv = S.pdfSave;
+    if (!sv) return;
+    clearTimeout(sv.timer);
+    try { URL.revokeObjectURL(sv.url); } catch (x) { /* 解放の失敗は無視する */ }
+    S.pdfSave = null;
+  }
+
+  // base64 → Blob → 保存。作り物の API（?mock=1）で AR_MOCK_DOWNLOADS が配列なら、保存の代わりに控える（試験用）
+  function savePdf(c, b64, fileName, here, text) {
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var blob = new Blob([bytes], { type: 'application/pdf' });
+    var url = URL.createObjectURL(blob);
+    if (MOCK && Array.isArray(window.AR_MOCK_DOWNLOADS)) {
+      window.AR_MOCK_DOWNLOADS.push({ name: fileName, size: blob.size, type: blob.type, head: String.fromCharCode.apply(null, Array.prototype.slice.call(bytes, 0, 4)), url: url, id: c.id });
+    } else {
+      var a = document.createElement('a');
+      a.href = url; a.download = fileName; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    if (!here) { setTimeout(function () { try { URL.revokeObjectURL(url); } catch (x) { /* 無視 */ } }, 60000); return; }   // 自分の URL だけを解放する
+    clearPdfSave();
+    var sv = { id: c.id, openSeq: c.openSeq, url: url, fileName: fileName, text: text, timer: null };
+    sv.timer = setTimeout(function () { if (S.pdfSave === sv) { clearPdfSave(); refreshViews(); } }, 60000);   // 時計は自分の保存のときだけ片付ける
+    S.pdfSave = sv;
+  }
+
+  async function getPdf() {
+    var id = S.openId;
+    var card = findCard(id);
+    if (!pdfFeature() || !card || S.pdfInFlight || card.paidMark) return;
+    var c = { id: id, gen: S.authGen, openSeq: S.openSeq, seq: ++S.pdfSeq };
+    S.pdfInFlight = c;
+    if (S.pdfMsg && S.pdfMsg.id === id) S.pdfMsg = null;
+    refreshViews();
+    var r = null;
+    try {
+      r = await api('pdf', { billingId: id }, { bg: true });   // 読み取りとして扱い、保存・ドラッグの書き込みを止めない
+    } finally {
+      if (S.pdfInFlight === c) S.pdfInFlight = null;   // 応答が戻る・打ち切るまで外さない（サインアウトでも外さない）
+    }
+    pdfResult(c, r);
+    refreshViews();
+  }
+
+  function pdfResult(c, r) {
+    if (c.gen !== S.authGen) return;   // サインアウト・別の人・トークンの更新の後に届いた結果は、保存もせず知らせも出さない
+    if (handleAuthFailure(r)) return;
+    var here = c.id === S.openId && c.openSeq === S.openSeq;
+    if (r && r.kind === 'ok' && typeof r.json.pdf === 'string' && typeof r.json.fileName === 'string') {
+      // 札は保存より先に（サーバは履歴を残しているので、端末の保存が失敗しても札はサーバと合わせる）
+      var card = findCard(c.id);
+      if (card) { var p = V.pdfLastPick(card.pdfLast, r.json.last); if (p) card.pdfLast = p; }
+      try {
+        savePdf(c, r.json.pdf, r.json.fileName, here, r.json.fileName + ' を保存しました' + (r.json.historyError ? '（取得の履歴は残せませんでした）' : '') + '。');
+      } catch (x) {
+        console.error(x);
+        if (here) S.pdfMsg = { id: c.id, openSeq: c.openSeq, tone: 'error', text: 'PDF を保存できませんでした。もう一度押してください' };
+        return;
+      }
+      if (here && S.pdfMsg && S.pdfMsg.id === c.id) S.pdfMsg = null;   // 成功の知らせは pdfSave が持つ（前の失敗の知らせは消す）
+      return;
+    }
+    if (here) S.pdfMsg = { id: c.id, openSeq: c.openSeq, tone: 'error', text: V.pdfFailText(r && r.kind === 'ok' ? { kind: 'broken' } : r) };
   }
 
   function noticeHTML() {
@@ -1620,6 +1729,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     else if (b.dataset.choice) { S.draftStatus = b.dataset.choice; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-assignee')) { S.draftAssignee = b.dataset.assignee; S.notice = null; renderDetail(); }
     else if (b.hasAttribute('data-save')) save();
+    else if (b.hasAttribute('data-pdf')) getPdf();   // 請求書 PDF（督促の支援 段3）
     else if (b.dataset.dunning) copyDunning(b.dataset.dunning);   // 督促文のコピー（督促の支援 段2）
     else if (b.hasAttribute('data-refresh')) loadList();
     else if (b.hasAttribute('data-paid-toggle')) { S.paidOpen = !S.paidOpen; renderOutcome(); }   // 「入金で解消」の行全体で開閉（UI-1）
