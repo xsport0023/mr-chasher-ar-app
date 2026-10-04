@@ -128,8 +128,12 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 .detail-meta .dunning-btn{padding:5px 9px;font-size:11px}
 .detail-meta .dunning-btn[data-dunning="初回"]{background:#fff4b8}.detail-meta .dunning-btn[data-dunning="2回目"]{background:#ffd9de} /* 初回は薄い黄色・2回目は薄い赤（ユーザー依頼 2026-10-03） */
 .dunning-line{margin-top:8px;font-size:12px;font-weight:800;color:#206f5d;overflow-wrap:anywhere}
-/* 請求書 PDF（督促の支援 段3、計画 ar-app-dunning §3-1-4）。帯の金額の右・督促文の左。札は最後に取った日時・誰 */
-.detail-meta .pdf-btn{padding:5px 9px;font-size:11px;background:#dff1ff}.detail-meta .pdf-last{background:#f4f1ff}
+/* 請求書 PDF（督促の支援 段3、計画 ar-app-dunning §3-1-4）。帯の金額の右・督促文の左。最後に取った日付・誰はボタンの下（段4 §3-4-2） */
+.detail-meta .pdf-btn{padding:5px 9px;font-size:11px;background:#dff1ff}
+/* 段4 §3-4-2: ボタンとその下の1行（最後に取った・コピーした日付と誰）。帯は上端でそろえ、同じ行のボタンの上端がそろう */
+.detail-meta{align-items:flex-start}.detail-meta .amount{line-height:1.15}
+.btn-stack{display:inline-flex;flex-direction:column;align-items:center;gap:3px}
+.btn-last{font-size:10px;font-weight:700;color:#665e76;line-height:1.2;white-space:nowrap}
 .dunning-line a{color:inherit;text-decoration:underline}
 .dunning-line.muted{color:#665e76;font-weight:700}.dunning-line.error{color:#a3203a}
 .detail-body{padding:22px}.detail-body h3{margin:0 0 10px;font-size:15px}
@@ -182,7 +186,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 <script src="config.js"></script>
-<script src="ar-view.js?v=2026-10-04.dunning.6"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
+<script src="ar-view.js?v=2026-10-04.dunning.7"></script><!-- 版の印。index.html と ar-view.js を必ず同じ版どうしで読む（成果表示の公開の直後に読み込み中のまま止まった。キャッシュの古い ar-view.js と混ざったと推測。確かめていない。2026-10-01） -->
 </head>
 <body>
 <div class="app">
@@ -237,7 +241,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   'use strict';
   var C = window.AR_CONFIG;
   var V = window.ArView;
-  var VIEW_VERSION = '2026-10-04.dunning.6';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
+  var VIEW_VERSION = '2026-10-04.dunning.7';   // <script src="ar-view.js?v=…"> と ar-view.js の VERSION と同じ値にする（静的な試験で照らす）
   var MOCK = new URLSearchParams(location.search).get('mock') === '1';
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (v) { return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
@@ -776,8 +780,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       var openWish = openCard && !locked(openId) ? V.draftWish(openCard, S.draftStatus, S.draftMemo, S.features ? S.draftAssignee : null) : null;
       var prevPdf = {};   // 請求書 PDF の札: 持っている値と一覧の値の「後」のほうを採る（遅れて届いた古い一覧で札を古くしない。段3 §3-1-4）
       allCards().forEach(function (c) { if (c.pdfLast) prevPdf[c.billingId] = c.pdfLast; });
+      var prevDun = {};   // 督促文のコピーの札も同じく種類ごとに「後」のほう（段4 §3-4-3）
+      allCards().forEach(function (c) { if (c.dunningLast) prevDun[c.billingId] = c.dunningLast; });
       S.tabs = r.json.tabs;
       allCards().forEach(function (c) { var p = V.pdfLastPick(prevPdf[c.billingId], c.pdfLast); if (p) c.pdfLast = p; else delete c.pdfLast; });
+      allCards().forEach(function (c) { var d = V.dunningLastPick(prevDun[c.billingId], c.dunningLast); if (d) c.dunningLast = d; else delete c.dunningLast; });
       S.fetchedAt = r.json.fetchedAt;
       S.warnings = r.json.warnings || [];
       S.dunning = V.dunningTemplatesOf(r.json, S.dunning);   // 読み失敗は前の文面を保ち、旧サーバ（欄なし）なら空（§3-2-5）
@@ -1055,6 +1062,7 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
   }
 
   function closeDetail(force) {
+    if (!force && copyHoldsDetail()) return;   // 督促文のコピーの途中は、押した詳細を利用者の操作では閉じない（段4 §3-4-3。自動で閉じる force は通す）
     var id = S.openId;
     var card = findCard(id);
     if (!force && !locked(id) && hasDraft(card) && !window.confirm('保存していない変更があります。閉じてよいですか？')) return;
@@ -1101,10 +1109,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     $('#detail').innerHTML =
       '<div class="overlay" data-overlay><article class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title" tabindex="-1">' +
       '<header class="detail-header"><div class="detail-header-top"><span class="eyebrow">請求の詳細 · 請求番号 ' + esc(card.billingNumber) + '</span>' +
-      '<button class="button small ghost" type="button" data-close>✕ 閉じる</button></div>' +
+      '<button class="button small ghost" type="button" data-close' + (copyHoldsDetail() ? ' disabled title="コピーの完了を待っています"' : '') + '>✕ 閉じる</button></div>' +
       '<h2 id="detail-title">' + esc(card.partner) + '</h2><div class="subject">' + esc(card.title) + '</div>' +
       '<div class="detail-meta"><strong class="amount">' + V.yen(card.amount) + '</strong>' + pdfButtonHTML(card) + dunningButtonsHTML(card) + '<span class="pill">' + dateLabel(tab) + ' ' + V.jpDate(dateOf(card, tab)) + '</span>' +
-      '<span class="pill">' + V.ageLabel(tab, card.days) + '</span>' + statusBadge(shownStatus(card)) + (writing ? '<span class="pill">保存中</span>' : moveWait ? '<span class="pill">保存待ち</span>' : '') + '</div>' +
+      // 経過日数の札は出さない。連絡状況の札は、この画面が知らない値のときだけ（段4 §3-4-1。一覧のカードと同じ安全策）
+      (V.laneOf(shownStatus(card)) === shownStatus(card) ? '' : statusBadge(shownStatus(card))) + (writing ? '<span class="pill">保存中</span>' : moveWait ? '<span class="pill">保存待ち</span>' : '') + '</div>' +
       pdfLineHTML(card) + dunningLineHTML(card) + '</header>' +
       '<div class="detail-body">' + noticeHTML() + failBox + lostBoxHTML() +
       // 左に連絡状況とメモ、右に担当と記録。左右の先頭をそろえる（ユーザー依頼 2026-09-27）
@@ -1215,8 +1224,10 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var block = V.dunningBlock(card);
     return S.dunning.map(function (t) {
       var title = block || (S.copyInFlight ? 'コピーしています' : '督促文（' + t.kind + '）を、この請求の値を差し込んでコピーします');
-      return '<button type="button" class="button small ghost dunning-btn" data-dunning="' + esc(t.kind) + '" data-ui-key="dun:btn:' + esc(t.kind) + '" title="' + esc(title) + '"' +
-        (block || S.copyInFlight ? ' disabled' : '') + '>督促文（' + esc(t.kind) + '）</button>';
+      // 最後にコピーした日付・誰はボタンの下に（段4 §3-4-3。旧サーバでは出さない）
+      var last = dunningLogFeature() && card.dunningLast ? V.lastShortLabel(card.dunningLast[t.kind]) : '';
+      return btnStackHTML('<button type="button" class="button small ghost dunning-btn" data-dunning="' + esc(t.kind) + '" data-ui-key="dun:btn:' + esc(t.kind) + '" title="' + esc(title) + '"' +
+        (block || S.copyInFlight ? ' disabled' : '') + '>督促文（' + esc(t.kind) + '）</button>', last);
     }).join('');
   }
 
@@ -1284,7 +1295,8 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     var t = dunningTemplate(kind);
     if (!card || !t || S.copyInFlight || V.dunningBlock(card)) return;
     var text = V.fillDunning(t.text, card);
-    var c = { id: id, gen: S.authGen, openSeq: S.openSeq, seq: ++S.copySeq, kind: kind, text: text, fetchedAt: S.fetchedAt, sig: V.dunningSig(card, t.text), timer: null };
+    var c = { id: id, gen: S.authGen, openSeq: S.openSeq, seq: ++S.copySeq, kind: kind, text: text, fetchedAt: S.fetchedAt, sig: V.dunningSig(card, t.text), timer: null,
+      billingNumber: card.billingNumber, partner: card.partner, msg: null };   // 履歴に添える値は押したときに控える（段4 §3-4-3）。msg はこのコピーで出した知らせ
     var p;
     try {
       var clip = clipboardApi();
@@ -1310,8 +1322,19 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
       clearTimeout(c.timer);
       if (S.copyInFlight === c) S.copyInFlight = null;   // 実際に終わったときだけ外す（結果を出すか捨てるかに関係なく）
       dunningResult(c, ok);
+      // 履歴は、コピーが成功し、サインインの世代が同じで、押した請求の値が押したときと同じときだけ送る（段4 §3-4-3）。
+      // 詳細が同じか（dunningCurrent）は見ない（保存の後に自動で閉じた場合も、コピーは済んでいるので残す）
+      if (ok && c.gen === S.authGen && dunningUnchanged(c)) logDunning(c);
       refreshViews();
     }
+  }
+
+  // 押した請求の今のカードの値が、押したときと同じか（カードが在る・文面が在る・入金済みの印などで作れなくなっていない・差し込む値が同じ）。
+  // dunningResult の changed と同じ判定（あちらは詳細が同じときだけ求める。こちらは履歴を送るかの判定で、詳細が変わっていても求める）
+  function dunningUnchanged(c) {
+    var card = findCard(c.id);
+    var t = dunningTemplate(c.kind);
+    return !!card && !!t && !V.dunningBlock(card) && V.dunningSig(card, t.text) === c.sig;
   }
 
   // コピーの結果を出す。押したときと今が違えば捨てる（OS へ渡したコピーは取り消せないものとして扱い、別の詳細には知らせない）
@@ -1319,11 +1342,11 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (!dunningCurrent(c)) return;
     var label = '督促文（' + c.kind + '）';
     if (ok) {
-      // 押した後に一覧を取り直した・入金済みと分かったなら、コピーした文は使わせない
+      // 押した後に一覧を取り直した・入金済みと分かったなら、コピーした文は使わせない（dunningUnchanged と同じ判定）
       var card = findCard(c.id);
       var t = dunningTemplate(c.kind);
       var changed = !card || !t || !!V.dunningBlock(card) || V.dunningSig(card, t.text) !== c.sig;
-      S.dunningMsg = changed
+      S.dunningMsg = c.msg = changed
         ? { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: 'error', text: label + 'をコピーしましたが、一覧が更新されました（または入金済みと分かりました）。この文は使わず、もう一度ボタンを押してください' }
         : { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: '', text: label + 'をコピーしました。一覧の取得（' + c.fetchedAt + '）時点の値です。入金済みでないかを確かめてから送ってください' };
       if (S.dunningFail && S.dunningFail.id === c.id && S.dunningFail.kind === c.kind) S.dunningFail = null;
@@ -1331,6 +1354,43 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     }
     S.dunningMsg = { id: c.id, openSeq: c.openSeq, kind: c.kind, tone: 'error', fail: true, text: label + 'をコピーできませんでした。下の文面を選んでコピーしてください' };
     S.dunningFail = { id: c.id, kind: c.kind, text: c.text, fetchedAt: c.fetchedAt, sig: c.sig, stale: false, needSelect: true };
+  }
+
+  // ---- 督促文のコピーの履歴（督促の支援 段4、計画 ar-app-dunning §3-4-3） ----
+  // サーバの action が在る（features.dunningLog）ときだけ送る・出す。送るのは裏の通信（bg。保存・ドラッグを止めない）で、
+  // 応答は最長15秒かかり、その間に次のコピーができるので重なりうる（札の後先は order で決まる）
+  function dunningLogFeature() { return !!(S.features && S.features.dunningLog); }
+
+  function logDunning(c) {
+    if (!dunningLogFeature()) return;
+    var body = { billingId: c.id, kind: c.kind, billingNumber: c.billingNumber, partner: c.partner };
+    api('dunningLog', body, { bg: true }).then(function (r) { dunningLogResult(c, r); refreshViews(); })
+      .catch(function (x) { console.error(x); });   // 裏の通信の失敗を未処理のまま残さない
+  }
+
+  function dunningLogResult(c, r) {
+    if (c.gen !== S.authGen) return;   // サインアウト・別の人・トークンの更新の後に届いた応答は捨てる
+    if (handleAuthFailure(r)) return;
+    if (r && r.kind === 'ok' && r.json && r.json.last) {
+      var card = findCard(c.id);
+      var inc = {};
+      inc[c.kind] = r.json.last;
+      if (card) { var p = V.dunningLastPick(card.dunningLast, inc); if (p) card.dunningLast = p; }
+      return;
+    }
+    // 失敗は、このコピーで出した知らせがまだ出ているときだけ添える（次のコピーの知らせに置き換わっていれば何もしない）
+    if (c.msg && S.dunningMsg === c.msg) c.msg.text += '（押した履歴は残せませんでした）';
+  }
+
+  // ボタンの下の1行（段4 §3-4-2）。ボタンとその下の1行を縦に重ねた入れ物
+  function btnStackHTML(buttonHTML, label) {
+    return '<span class="btn-stack">' + buttonHTML + (label ? '<small class="btn-last">' + esc(label) + '</small>' : '') + '</span>';
+  }
+
+  // コピーの途中は、押した詳細を利用者が閉じる・切り替える・サインアウトする操作を塞ぐ（段4 §3-4-3）
+  function copyHoldsDetail() {
+    var c = S.copyInFlight;
+    return !!c && c.id === S.openId && c.openSeq === S.openSeq;
   }
 
   // ---- 請求書 PDF（督促の支援 段3、計画 ar-app-dunning §3-1-4） ----
@@ -1343,10 +1403,9 @@ h1{font-size:29px;letter-spacing:-.04em;line-height:1.15;margin:0;font-weight:95
     if (!pdfFeature()) return '';
     var why = card.paidMark ? 'この請求は入金済みになりました。一覧を取り直してください' : '';
     var title = why || (S.pdfInFlight ? 'PDF を取得しています' : '請求書の PDF を保存します');
-    var label = V.pdfLastLabel(card.pdfLast);
-    return '<button type="button" class="button small ghost pdf-btn" data-pdf data-ui-key="pdf:btn" title="' + esc(title) + '"' +
-      (why || S.pdfInFlight ? ' disabled' : '') + '>' + (S.pdfInFlight ? '取得中…' : '請求書 PDF') + '</button>' +
-      (label ? '<span class="pill pdf-last">' + esc(label) + '</span>' : '');
+    // 最後に取った日付・誰はボタンの下に（段4 §3-4-2。時刻は出さない）
+    return btnStackHTML('<button type="button" class="button small ghost pdf-btn" data-pdf data-ui-key="pdf:btn" title="' + esc(title) + '"' +
+      (why || S.pdfInFlight ? ' disabled' : '') + '>' + (S.pdfInFlight ? '取得中…' : '請求書 PDF') + '</button>', V.lastShortLabel(card.pdfLast));
   }
 
   // 帯の下の1行: この詳細の PDF の知らせと「ここを押して保存」

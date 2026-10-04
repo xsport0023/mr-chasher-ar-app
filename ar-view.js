@@ -255,11 +255,23 @@
     if (!n) return p;
     return pdfOrderAfter(n.order, p ? p.order : null) ? n : p;
   }
-  // 帯の札「PDF取得 10/04 11:20 田中」（at は yyyy/MM/dd HH:mm:ss）
-  function pdfLastLabel(x) {
+  // ボタンの下の1行「10/04 田中」（督促の支援 段4 §3-4-2。PDF と督促文で共通。at は yyyy/MM/dd HH:mm:ss で、時刻は出さない）。
+  // 形の合わない値・at が yyyy/MM/dd で始まらない値は空。誰が無ければ月日だけ。段3 の帯の札 pdfLastLabel はこれに置き換えた
+  function lastShortLabel(x) {
     if (!pdfLastOk(x)) return '';
-    var m = /^\d{4}\/(\d{2})\/(\d{2}) (\d{2}):(\d{2})/.exec(x.at);
-    return 'PDF取得 ' + (m ? m[1] + '/' + m[2] + ' ' + m[3] + ':' + m[4] : x.at) + (x.who ? ' ' + x.who : '');
+    var m = /^\d{4}\/(\d{2})\/(\d{2})/.exec(x.at);
+    if (!m) return '';
+    return m[1] + '/' + m[2] + (x.who ? ' ' + x.who : '');
+  }
+  // 督促文のコピーの最後の1行（段4 §3-4-3）を種類ごとに、持っている値と届いた値の「後」のほうで決める（pdfLastPick と同じ規則）。
+  // 届いた値に無い種類も、持っている値は消さない。どちらの種類も無ければ null
+  function dunningLastPick(prev, next) {
+    var out = null;
+    DUNNING_KINDS.forEach(function (k) {
+      var p = pdfLastPick(prev && typeof prev === 'object' ? prev[k] : null, next && typeof next === 'object' ? next[k] : null);
+      if (p) { out = out || {}; out[k] = p; }
+    });
+    return out;
   }
   // 失敗の知らせ（帯の下の1行。§3-1-4）。認証の失敗は画面が handleAuthFailure へ渡すので、ここへは来ない
   function pdfFailText(r) {
@@ -754,8 +766,9 @@
     lastActLine: lastActLine, newerLast: newerLast,
     DUNNING_KINDS: DUNNING_KINDS, dunningTemplatesOf: dunningTemplatesOf, dunningDate: dunningDate, dunningAmount: dunningAmount,
     dunningBlock: dunningBlock, fillDunning: fillDunning, dunningSig: dunningSig, dunningBoxState: dunningBoxState,
-    pdfOrderAfter: pdfOrderAfter, pdfLastPick: pdfLastPick, pdfLastLabel: pdfLastLabel, pdfFailText: pdfFailText,
-    VERSION: '2026-10-04.dunning.6'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-04）
+    pdfOrderAfter: pdfOrderAfter, pdfLastPick: pdfLastPick, pdfFailText: pdfFailText,
+    lastShortLabel: lastShortLabel, dunningLastPick: dunningLastPick,
+    VERSION: '2026-10-04.dunning.7'   // index.html の VIEW_VERSION と <script src="ar-view.js?v=…"> と同じ（版の印。2026-10-04）
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ArView = api;
